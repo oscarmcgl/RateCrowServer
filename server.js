@@ -2,9 +2,6 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const { google } = require("googleapis");
 const cors = require("cors");
-const crypto = require("crypto");
-
-const VALIDATION_HASHES = {};
 
 const app = express(); // Initialize the Express app
 
@@ -13,7 +10,6 @@ const allowedOrigins = [
   "https://oscarmcglone.com",
   "https://ratethiscrow.oscarmcglone.com",
   "https://crows.oscarmcglone.com",
-  "http://127.0.0.1:5500",
 ];
 
 const corsOptions = {
@@ -43,43 +39,6 @@ const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY), 
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
-
-
-// Validation password
-app.post("/validate-password", (req, res) => {
-  const { password } = req.body;
-
-  const UPLOAD_PASSWORD = process.env.UPLOAD_PASS; // Replace with your desired password
-  if (password === UPLOAD_PASSWORD) {
-    // Generate a random hash
-    const hash = crypto.randomBytes(16).toString("hex");
-
-    // Store the hash temporarily (e.g., for 10 minutes)
-    VALIDATION_HASHES[hash] = Date.now();
-
-    res.json({ hash });
-  } else {
-    res.status(401).send("Unauthorized: Incorrect password");
-  }
-});
-
-// Middleware to validate the hash
-function validateHash(req, res, next) {
-  const { hash } = req.body;
-
-  if (!hash || !VALIDATION_HASHES[hash]) {
-    return res.status(403).send("Forbidden: Invalid or missing hash");
-  }
-
-  // Check if the hash has expired (e.g., valid for 10 minutes)
-  const hashAge = Date.now() - VALIDATION_HASHES[hash];
-  if (hashAge > 10 * 60 * 1000) { // 10 minutes
-    delete VALIDATION_HASHES[hash]; // Remove expired hash
-    return res.status(403).send("Forbidden: Hash expired");
-  }
-
-  next();
-}
 
 
 // Return random crow_id, img_url, avg_rating, and rating_count from the sheet
@@ -146,40 +105,39 @@ app.post("/rate", async (req, res) => {
     }
   });
   
-// File upload endpoint (protected by hash validation)
-app.post("/upload", validateHash, async (req, res) => {
-  const { img_url } = req.body;
-
-  if (!img_url) {
-    return res.status(400).send("Missing img_url");
-  }
-
-  try {
-    const sheets = google.sheets({ version: "v4", auth });
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: SHEET_NAME,
-    });
-
-    const rows = response.data.values;
-    const newCrowId = `crow_${rows.length}`;
-    const newRow = [newCrowId, img_url, 0, 0];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: SHEET_NAME,
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [newRow],
-      },
-    });
-
-    res.json({ crow_id: newCrowId, img_url });
-  } catch (error) {
-    console.error("Error uploading new crow:", error);
-    res.status(500).send("Error uploading new crow");
-  }
-});
+// Upload a new crow image with img_url creating a new crow_id
+app.post("/upload", async (req, res) => {
+    const { img_url } = req.body;
+  
+    if (!img_url) {
+      return res.status(400).send("Missing img_url");
+    }
+  
+    try {
+      const sheets = google.sheets({ version: "v4", auth });
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: SHEET_NAME,
+      });
+  
+      const rows = response.data.values;
+      const newCrowId = `crow_${rows.length}`;
+      const newRow = [newCrowId, img_url, 0, 0];
+  
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: SHEET_NAME,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [newRow],
+        },
+      });
+  
+      res.json({ crow_id: newCrowId, img_url });
+    } catch (error) {
+      res.status(500).send("Error uploading new crow");
+    }
+  });
   
 // Return the crow_id, img_url, avg_rating, and rating_count for top leaderboard 3 crows
 app.get("/leaderboard", async (req, res) => {
