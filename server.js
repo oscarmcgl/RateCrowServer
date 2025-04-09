@@ -7,11 +7,9 @@ const app = express(); // Initialize the Express app
 
 // CORS configuration
 const allowedOrigins = [
-  "https://oscarmcglone.com", 
-  "https://duck.oscarmcglone.com", 
+  "https://oscarmcglone.com",
   "https://ratethiscrow.oscarmcglone.com",
-  "http://127.0.0.1:5500",
-  "http://localhost:5500",
+  "https://crows.oscarmcglone.com",
 ];
 
 const corsOptions = {
