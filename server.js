@@ -10,6 +10,7 @@ const allowedOrigins = [
   "https://oscarmcglone.com",
   "https://ratethiscrow.oscarmcglone.com",
   "https://crows.oscarmcglone.com",
+  "https://127.0.0.1:5500",
 ];
 
 const corsOptions = {
@@ -110,7 +111,7 @@ app.post("/upload", async (req, res) => {
   const { img_url, password } = req.body;
 
   // Validate the password
-  const UPLOAD_PASSWORD = "securepassword"; // Replace with your desired password
+  const UPLOAD_PASSWORD = process.env.UPLOAD_PASS; 
   if (password !== UPLOAD_PASSWORD) {
     return res.status(401).send("Unauthorized: Incorrect password");
   }
