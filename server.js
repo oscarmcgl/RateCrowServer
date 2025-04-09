@@ -107,37 +107,44 @@ app.post("/rate", async (req, res) => {
   
 // Upload a new crow image with img_url creating a new crow_id
 app.post("/upload", async (req, res) => {
-    const { img_url } = req.body;
-  
-    if (!img_url) {
-      return res.status(400).send("Missing img_url");
-    }
-  
-    try {
-      const sheets = google.sheets({ version: "v4", auth });
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-      });
-  
-      const rows = response.data.values;
-      const newCrowId = `crow_${rows.length}`;
-      const newRow = [newCrowId, img_url, 0, 0];
-  
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [newRow],
-        },
-      });
-  
-      res.json({ crow_id: newCrowId, img_url });
-    } catch (error) {
-      res.status(500).send("Error uploading new crow");
-    }
-  });
+  const { img_url, password } = req.body;
+
+  // Validate the password
+  const UPLOAD_PASSWORD = "securepassword"; // Replace with your desired password
+  if (password !== UPLOAD_PASSWORD) {
+    return res.status(401).send("Unauthorized: Incorrect password");
+  }
+
+  if (!img_url) {
+    return res.status(400).send("Missing img_url");
+  }
+
+  try {
+    const sheets = google.sheets({ version: "v4", auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: SHEET_NAME,
+    });
+
+    const rows = response.data.values;
+    const newCrowId = `crow_${rows.length}`;
+    const newRow = [newCrowId, img_url, 0, 0];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: SHEET_NAME,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [newRow],
+      },
+    });
+
+    res.json({ crow_id: newCrowId, img_url });
+  } catch (error) {
+    console.error("Error uploading new crow:", error);
+    res.status(500).send("Error uploading new crow");
+  }
+});
   
 // Return the crow_id, img_url, avg_rating, and rating_count for top leaderboard 3 crows
 app.get("/leaderboard", async (req, res) => {
