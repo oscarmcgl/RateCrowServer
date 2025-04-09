@@ -171,7 +171,37 @@ app.get("/leaderboard", async (req, res) => {
     }
   });
 
-  
+app.get("/crow/:id", async (req, res) => {
+    const crowId = req.params.id;
+
+    try {
+        const sheets = google.sheets({ version: "v4", auth });
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: SHEET_NAME,
+        });
+
+        const rows = response.data.values;
+        const crow = rows.find(row => row[0] === crowId);
+
+        if (!crow) {
+            return res.status(404).send("Crow not found");
+        }
+
+        const [id, img_url, avg_rating, rating_count] = crow;
+
+        res.json({
+            crow_id: id,
+            img_url,
+            avg_rating: parseFloat(avg_rating),
+            rating_count: parseInt(rating_count, 10),
+        });
+    } catch (error) {
+        console.error("Error fetching crow by ID:", error);
+        res.status(500).send("Error fetching crow");
+    }
+});
+
 //Health Check for Uptime Robot
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
