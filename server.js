@@ -41,6 +41,17 @@ const auth = new google.auth.GoogleAuth({
 });
 
 
+app.post("/validate-password", (req, res) => {
+  const { password } = req.body;
+
+  const UPLOAD_PASSWORD = process.env.UPLOAD_PASS; // Replace with your desired password
+  if (password === UPLOAD_PASSWORD) {
+    res.status(200).send("Password validated successfully");
+  } else {
+    res.status(401).send("Unauthorized: Incorrect password");
+  }
+});
+
 // Return random crow_id, img_url, avg_rating, and rating_count from the sheet
 app.get("/random", async (req, res) => {
     try {
