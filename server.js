@@ -68,9 +68,16 @@ app.get("/random", async (req, res) => {
       }
   
       const randomIndex = Math.floor(Math.random() * (rows.length - 1)) + 1;
-      const [crow_id, img_url, avg_rating, rating_count] = rows[randomIndex];
+      const [crow_id, img_url, avg_rating, rating_count, credit_name, credit_link] = rows[randomIndex];
   
-      res.json({ crow_id, img_url, avg_rating: parseFloat(avg_rating), rating_count: parseInt(rating_count) });
+      res.json({ 
+        crow_id, 
+        img_url, 
+        avg_rating: parseFloat(avg_rating), 
+        rating_count: parseInt(rating_count),
+        credit_name: credit_name || "Unknown",
+        credit_link: credit_link || "Unknown",
+      });
     } catch (error) {
       res.status(500).send("Error fetching random crow");
     }
@@ -119,7 +126,7 @@ app.post("/rate", async (req, res) => {
   
 // Upload a new crow image with img_url creating a new crow_id
 app.post("/upload", async (req, res) => {
-    const { img_url } = req.body;
+    const { img_url, credit_name = "Unknown", credit_link = "#" } = req.body;
   
     if (!img_url) {
       return res.status(400).send("Missing img_url");
@@ -134,7 +141,7 @@ app.post("/upload", async (req, res) => {
   
       const rows = response.data.values;
       const newCrowId = `crow_${rows.length}`;
-      const newRow = [newCrowId, img_url, 0, 0];
+      const newRow = [newCrowId, img_url, 0, 0, credit_name, credit_link];
   
       await sheets.spreadsheets.values.append({
         spreadsheetId: SPREADSHEET_ID,
@@ -145,7 +152,7 @@ app.post("/upload", async (req, res) => {
         },
       });
   
-      res.json({ crow_id: newCrowId, img_url });
+      res.json({ crow_id: newCrowId, img_url, credit_name, credit_link });
     } catch (error) {
       res.status(500).send("Error uploading new crow");
     }
@@ -205,6 +212,8 @@ app.get("/crow/:id", async (req, res) => {
             img_url,
             avg_rating: parseFloat(avg_rating),
             rating_count: parseInt(rating_count, 10),
+            credit_name: crow[4] || "Unknown",
+            credit_link: crow[5] || "Unknown",
         });
     } catch (error) {
         console.error("Error fetching crow by ID:", error);
