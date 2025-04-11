@@ -46,7 +46,7 @@ const auth = new google.auth.GoogleAuth({
 app.post("/validate-password", (req, res) => {
   const { password } = req.body;
 
-  const UPLOAD_PASSWORD = process.env.UPLOAD_PASS; // Replace with your desired password
+  const UPLOAD_PASSWORD = process.env.UPLOAD_PASS; 
   if (password === UPLOAD_PASSWORD) {
     res.status(200).send("Password validated successfully");
   } else {
@@ -172,6 +172,9 @@ app.get("/leaderboard", async (req, res) => {
       if (!rows || rows.length <= 1) {
         return res.status(404).send("No data found");
       }
+
+      const totalCrows = rows.length - 1; // Exclude header row
+      const countToReturn = Math.max(1, Math.floor(totalCrows * 0.25)); // At least 1 crow
   
       const leaderboard = rows.slice(1)
         .map(([crow_id, img_url, avg_rating, rating_count]) => ({
@@ -181,7 +184,7 @@ app.get("/leaderboard", async (req, res) => {
           rating_count: parseInt(rating_count),
         }))
         .sort((a, b) => b.avg_rating - a.avg_rating)
-        .slice(0, 3);
+        .slice(0, countToReturn);
   
       res.json(leaderboard);
     } catch (error) {
