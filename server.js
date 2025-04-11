@@ -1,9 +1,15 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const { google } = require("googleapis");
 const cors = require("cors");
 
 const app = express(); // Initialize the Express app
+
+const { createClient } = require("@supabase/supabase-js");
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // CORS configuration
 const allowedOrigins = [
@@ -13,6 +19,7 @@ const allowedOrigins = [
   "https://ratethiscrow.site",
   "http://127.0.0.1:5500",
 ];
+
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -33,16 +40,6 @@ app.options("*", cors(corsOptions));
 
 app.use(bodyParser.json()); 
 
-const SPREADSHEET_ID = "1nHVC5ahA0qOj4uE05YKWb3Fn3BjGSu_Uq8_ZXJ4cm_0";
-const SHEET_NAME = "RateThisCrow";
-
-// Authenticate with the service account
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY), 
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-
-
 app.post("/validate-password", (req, res) => {
   const { password } = req.body;
 
@@ -56,205 +53,164 @@ app.post("/validate-password", (req, res) => {
 
 // Return random crow_id, img_url, avg_rating, and rating_count from the sheet
 app.get("/random", async (req, res) => {
-    try {
-      const sheets = google.sheets({ version: "v4", auth });
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-      });
-  
-      const rows = response.data.values;
-      if (!rows || rows.length <= 1) {
-        return res.status(404).send("No data found");
-      }
-  
-      const randomIndex = Math.floor(Math.random() * (rows.length - 1)) + 1;
-      const [crow_id, img_url, avg_rating, rating_count, credit_name, credit_link] = rows[randomIndex];
-  
-      res.json({ 
-        crow_id, 
-        img_url, 
-        avg_rating: parseFloat(avg_rating), 
-        rating_count: parseInt(rating_count),
-        credit_name: credit_name || "Unknown",
-        credit_link: credit_link || "Unknown",
-      });
-    } catch (error) {
-      res.status(500).send("Error fetching random crow");
+  try {
+    const { data: crows, error } = await supabase
+      .from("crows")
+      .select("*");
+
+    if (error) throw error;
+
+    if (!crows || crows.length === 0) {
+      return res.status(404).send("No data found");
     }
-  });
+
+    const randomCrow = crows[Math.floor(Math.random() * crows.length)];
+    res.json(randomCrow);
+  } catch (error) {
+    console.error("Error fetching random crow:", error);
+    res.status(500).send("Error fetching random crow");
+  }
+});
   
 // Send a rating with crow_id and rating to sheet
 app.post("/rate", async (req, res) => {
-    const { crow_id, rating } = req.body;
-  
-    if (!crow_id || !rating) {
-      return res.status(400).send("Missing crow_id or rating");
+  const { crow_id, rating } = req.body;
+
+  if (!crow_id || !rating) {
+    return res.status(400).send("Missing crow_id or rating");
+  }
+
+  try {
+    const { data: crow, error: fetchError } = await supabase
+      .from("crows")
+      .select("*")
+      .eq("crow_id", crow_id)
+      .single();
+
+    if (fetchError) throw fetchError;
+
+    if (!crow) {
+      return res.status(404).send("Crow not found");
     }
-  
-    try {
-      const sheets = google.sheets({ version: "v4", auth });
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-      });
-  
-      const rows = response.data.values;
-      const rowIndex = rows.findIndex(row => row[0] === crow_id);
-  
-      if (rowIndex === -1) {
-        return res.status(404).send("Crow not found");
-      }
-  
-      const [_, img_url, avg_rating, rating_count] = rows[rowIndex];
-      const newRatingCount = parseInt(rating_count) + 1;
-      const newAvgRating = ((parseFloat(avg_rating) * parseInt(rating_count)) + parseFloat(rating)) / newRatingCount;
-  
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `${SHEET_NAME}!C${rowIndex + 1}:D${rowIndex + 1}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [[newAvgRating.toFixed(2), newRatingCount]],
-        },
-      });
-  
-      res.send("Rating updated successfully");
-    } catch (error) {
-      res.status(500).send("Error updating rating");
-    }
-  });
+
+    const newRatingCount = crow.rating_count + 1;
+    const newAvgRating = ((crow.avg_rating * crow.rating_count) + rating) / newRatingCount;
+
+    const { error: updateError } = await supabase
+      .from("crows")
+      .update({ avg_rating: newAvgRating, rating_count: newRatingCount })
+      .eq("crow_id", crow_id);
+
+    if (updateError) throw updateError;
+
+    res.send("Rating updated successfully");
+  } catch (error) {
+    console.error("Error updating rating:", error);
+    res.status(500).send("Error updating rating");
+  }
+});
   
 // Upload a new crow image with img_url creating a new crow_id
 app.post("/upload", async (req, res) => {
-    const { img_url, credit_name = "Unknown", credit_link = "#" } = req.body;
-  
-    if (!img_url) {
-      return res.status(400).send("Missing img_url");
-    }
-  
-    try {
-      const sheets = google.sheets({ version: "v4", auth });
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-      });
-  
-      const rows = response.data.values;
-      const newCrowId = `crow_${rows.length}`;
-      const newRow = [newCrowId, img_url, 0, 0, credit_name, credit_link];
-  
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [newRow],
-        },
-      });
-  
-      res.json({ crow_id: newCrowId, img_url, credit_name, credit_link });
-    } catch (error) {
-      res.status(500).send("Error uploading new crow");
-    }
-  });
+  const { img_url, credit_name = "Unknown", credit_link = "#", name = "Unnamed Crow" } = req.body;
+
+  if (!img_url) {
+    return res.status(400).send("Missing img_url");
+  }
+
+  try {
+    // Fetch all existing rows to determine the next crow_id
+    const { data: crows, error: fetchError } = await supabase
+      .from("crows")
+      .select("crow_id");
+
+    if (fetchError) throw fetchError;
+
+    // Generate the new crow_id based on the number of rows
+    const newCrowId = `crow_${crows.length + 1}`;
+
+    // Insert the new crow into the database
+    const { error: insertError } = await supabase
+      .from("crows")
+      .insert([{ crow_id: newCrowId, img_url, avg_rating: 0, rating_count: 0, credit_name, credit_link, name }]);
+
+    if (insertError) throw insertError;
+
+    res.json({ crow_id: newCrowId, img_url, credit_name, credit_link, name });
+  } catch (error) {
+    console.error("Error uploading crow:", error);
+    res.status(500).send("Error uploading new crow");
+  }
+});
   
 // Return the crow_id, img_url, avg_rating, and rating_count for top leaderboard 25%
 app.get("/leaderboard", async (req, res) => {
-    try {
-      const sheets = google.sheets({ version: "v4", auth });
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: SHEET_NAME,
-      });
-  
-      const rows = response.data.values;
-      if (!rows || rows.length <= 1) {
-        return res.status(404).send("No data found");
-      }
+  try {
+    const { data: crows, error } = await supabase
+      .from("crows")
+      .select("*")
+      .order("avg_rating", { ascending: false });
 
-      const totalCrows = rows.length - 1; // Exclude header row
-      const countToReturn = Math.max(1, Math.floor(totalCrows * 0.25)); // At least 1 crow
-  
-      const leaderboard = rows.slice(1)
-        .map(([crow_id, img_url, avg_rating, rating_count]) => ({
-          crow_id,
-          img_url,
-          avg_rating: parseFloat(avg_rating),
-          rating_count: parseInt(rating_count),
-        }))
-        .sort((a, b) => b.avg_rating - a.avg_rating)
-        .slice(0, countToReturn);
-  
-      res.json(leaderboard);
-    } catch (error) {
-      res.status(500).send("Error fetching leaderboard");
-    }
-  });
+    if (error) throw error;
+
+    const top25Percent = Math.ceil(crows.length * 0.25);
+    res.json(crows.slice(0, top25Percent));
+  } catch (error) {
+    console.error("Error fetching leaderboard:", error);
+    res.status(500).send("Error fetching leaderboard");
+  }
+});
 
 // Return the crow_id, img_url, avg_rating, and rating_count for all crows in lb fashion 
 app.get("/all-crows", async (req, res) => {
   try {
-    const sheets = google.sheets({ version: "v4", auth });
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: SHEET_NAME,
-    });
+    const { data: crows, error } = await supabase
+      .from("crows")
+      .select("*")
+      .order("avg_rating", { ascending: false });
 
-    const rows = response.data.values;
-    if (!rows || rows.length <= 1) {
+    if (error) throw error;
+
+    if (!crows || crows.length === 0) {
       return res.status(404).send("No data found");
     }
 
-    const totalCrows = rows.length - 1; // Exclude header row
-
-    const listing = rows.slice(1)
-      .map(([crow_id, img_url, avg_rating, rating_count]) => ({
-        crow_id,
-        img_url,
-        avg_rating: parseFloat(avg_rating),
-        rating_count: parseInt(rating_count),
-      }))
-      .sort((a, b) => b.avg_rating - a.avg_rating)
-      .slice(0, totalCrows);
-
-    res.json(listing);
+    res.json(crows);
   } catch (error) {
-    res.status(500).send("Error fetching listing");
+    console.error("Error fetching all crows:", error);
+    res.status(500).send("Error fetching all crows");
   }
 });
 
 app.get("/crow/:id", async (req, res) => {
-    const crowId = req.params.id;
+  const crowId = req.params.id;
 
-    try {
-        const sheets = google.sheets({ version: "v4", auth });
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: SHEET_NAME,
-        });
+  try {
+    const { data: crow, error } = await supabase
+      .from("crows")
+      .select("*")
+      .eq("crow_id", crowId)
+      .single();
 
-        const rows = response.data.values;
-        const crow = rows.find(row => row[0] === crowId);
+    if (error) throw error;
 
-        if (!crow) {
-            return res.status(404).send("Crow not found");
-        }
-
-        const [id, img_url, avg_rating, rating_count] = crow;
-
-        res.json({
-            crow_id: id,
-            img_url,
-            avg_rating: parseFloat(avg_rating),
-            rating_count: parseInt(rating_count, 10),
-            credit_name: crow[4] || "Unknown",
-            credit_link: crow[5] || "Unknown",
-        });
-    } catch (error) {
-        console.error("Error fetching crow by ID:", error);
-        res.status(500).send("Error fetching crow");
+    if (!crow) {
+      return res.status(404).send("Crow not found");
     }
+
+    res.json({
+      crow_id: crow.crow_id,
+      img_url: crow.img_url,
+      avg_rating: crow.avg_rating,
+      rating_count: crow.rating_count,
+      credit_name: crow.credit_name || "Unknown",
+      credit_link: crow.credit_link || "#",
+      name: crow.name || "Unnamed Crow",
+    });
+  } catch (error) {
+    console.error("Error fetching crow by ID:", error);
+    res.status(500).send("Error fetching crow");
+  }
 });
 
 //Health Check for Uptime Robot
