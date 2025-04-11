@@ -159,7 +159,7 @@ app.post("/upload", async (req, res) => {
     }
   });
   
-// Return the crow_id, img_url, avg_rating, and rating_count for top leaderboard 3 crows
+// Return the crow_id, img_url, avg_rating, and rating_count for top leaderboard 25%
 app.get("/leaderboard", async (req, res) => {
     try {
       const sheets = google.sheets({ version: "v4", auth });
@@ -191,6 +191,38 @@ app.get("/leaderboard", async (req, res) => {
       res.status(500).send("Error fetching leaderboard");
     }
   });
+
+// Return the crow_id, img_url, avg_rating, and rating_count for all crows in lb fashion 
+app.get("/all-crows", async (req, res) => {
+  try {
+    const sheets = google.sheets({ version: "v4", auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: SHEET_NAME,
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.status(404).send("No data found");
+    }
+
+    const totalCrows = rows.length - 1; // Exclude header row
+
+    const listing = rows.slice(1)
+      .map(([crow_id, img_url, avg_rating, rating_count]) => ({
+        crow_id,
+        img_url,
+        avg_rating: parseFloat(avg_rating),
+        rating_count: parseInt(rating_count),
+      }))
+      .sort((a, b) => b.avg_rating - a.avg_rating)
+      .slice(0, totalCrows);
+
+    res.json(listing);
+  } catch (error) {
+    res.status(500).send("Error fetching listing");
+  }
+});
 
 app.get("/crow/:id", async (req, res) => {
     const crowId = req.params.id;
