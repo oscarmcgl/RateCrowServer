@@ -112,7 +112,7 @@ app.post("/rate", async (req, res) => {
   
 // Upload a new crow image with img_url creating a new crow_id
 app.post("/upload", async (req, res) => {
-  const { img_url, credit_name = "Unknown", credit_link = "#", name = "Unnamed Crow" } = req.body;
+  const { img_url, credit_name = "Unknown", credit_link = "#"} = req.body;
 
   if (!img_url) {
     return res.status(400).send("Missing img_url");
@@ -132,11 +132,11 @@ app.post("/upload", async (req, res) => {
     // Insert the new crow into the database
     const { error: insertError } = await supabase
       .from("crows")
-      .insert([{ crow_id: newCrowId, img_url, avg_rating: 0, rating_count: 0, credit_name, credit_link, name }]);
+      .insert([{ crow_id: newCrowId, img_url, avg_rating: 0, rating_count: 0, credit_name, credit_link }]);
 
     if (insertError) throw insertError;
 
-    res.json({ crow_id: newCrowId, img_url, credit_name, credit_link, name });
+    res.json({ crow_id: newCrowId, img_url, credit_name, credit_link});
   } catch (error) {
     console.error("Error uploading crow:", error);
     res.status(500).send("Error uploading new crow");
