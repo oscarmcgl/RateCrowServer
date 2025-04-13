@@ -38,7 +38,8 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions)); 
 
-app.use(bodyParser.json()); 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.post("/validate-password", (req, res) => {
   const { password } = req.body;
