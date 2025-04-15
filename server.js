@@ -287,17 +287,14 @@ app.post("/names", async (req, res) => {
   try {
     const { data: names, error } = await supabase
       .from("names")
-      .select("name, upvotes, downvotes")
+      .select("name, upvotes, downvotes, name_id")
       .eq("crow_id", crow_id)
-      .order("upvotes", { ascending: false }); 
+      .order("upvotes", { ascending: false });
 
     if (error) throw error;
 
-    if (!names || names.length === 0) {
-      return res.status(404).send("No names found for this crow");
-    }
-
-    res.json(names);
+    // Return an empty array if no names are found
+    res.json(names || []);
   } catch (error) {
     console.error("Error fetching names for crow:", error);
     res.status(500).send("Error fetching names for crow");
