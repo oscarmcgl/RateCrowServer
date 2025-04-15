@@ -214,6 +214,96 @@ app.get("/crow/:id", async (req, res) => {
   }
 });
 
+app.post("/new-name", async (req, res) => {
+  const { crow_id, name } = req.body;
+
+  if (!crow_id || !name) {
+    return res.status(400).send("Missing crow_id or name");
+  }
+
+  try {
+    const nameId = `name_${Date.now()}`; // Generate a unique name_id
+    const { error } = await supabase
+      .from("names")
+      .insert([{ crow_id, name_id: nameId, name, upvotes: 0, downvotes: 0 }]);
+
+    if (error) throw error;
+
+    res.status(201).send("Name added successfully");
+  } catch (error) {
+    console.error("Error adding new name:", error);
+    res.status(500).send("Error adding new name");
+  }
+});
+
+app.post("/name-vote", async (req, res) => {
+  const { crow_id, name_id, vote_type } = req.body; // `vote_type` should be "upvote" or "downvote"
+
+  if (!crow_id || !name_id || !vote_type) {
+    return res.status(400).send("Missing crow_id, name_id, or vote_type");
+  }
+
+  try {
+    const { data, error: fetchError } = await supabase
+      .from("names")
+      .select("*")
+      .eq("crow_id", crow_id)
+      .eq("name_id", name_id)
+      .single();
+
+    if (fetchError) throw fetchError;
+
+    if (!data) {
+      return res.status(404).send("Name not found for this crow");
+    }
+
+    const updatedVotes =
+      vote_type === "upvote"
+        ? { upvotes: data.upvotes + 1 }
+        : { downvotes: data.downvotes + 1 };
+
+    const { error: updateError } = await supabase
+      .from("names")
+      .update(updatedVotes)
+      .eq("crow_id", crow_id)
+      .eq("name_id", name_id);
+
+    if (updateError) throw updateError;
+
+    res.send("Vote added successfully");
+  } catch (error) {
+    console.error("Error voting on name:", error);
+    res.status(500).send("Error voting on name");
+  }
+});
+
+app.post("/names", async (req, res) => {
+  const { crow_id } = req.body;
+
+  if (!crow_id) {
+    return res.status(400).send("Missing crow_id");
+  }
+
+  try {
+    const { data: names, error } = await supabase
+      .from("names")
+      .select("name, upvotes, downvotes")
+      .eq("crow_id", crow_id)
+      .order("upvotes", { ascending: false }); 
+
+    if (error) throw error;
+
+    if (!names || names.length === 0) {
+      return res.status(404).send("No names found for this crow");
+    }
+
+    res.json(names);
+  } catch (error) {
+    console.error("Error fetching names for crow:", error);
+    res.status(500).send("Error fetching names for crow");
+  }
+});
+
 //Health Check for Uptime Robot
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
