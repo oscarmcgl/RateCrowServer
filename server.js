@@ -358,9 +358,9 @@ app.post("/validate-name", (req, res) => {
       // Generate the verification URL
       const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
   
-      // Send the verification email using Mailtrap API V2
+      // Send the verification email using Mailtrap API
       const response = await axios.post(
-        "https://send.api.mailtrap.io/api/send",
+        "https://send.api.mailtrap.io/api/send", // Correct endpoint
         {
           from: {
             email: "no-reply@oscarmcglone.com",
@@ -369,15 +369,17 @@ app.post("/validate-name", (req, res) => {
           to: [
             {
               email: email,
+              name: email.split("@")[0], // Use the part before "@" as the name
             },
           ],
           subject: "Verify Your CrowMail Sign Up",
+          text: `Click the link below to verify your sign up: ${verificationUrl}`,
           html: `<p>Click the link below to verify your sign up:</p>
                  <a href="${verificationUrl}">${verificationUrl}</a>`,
         },
         {
           headers: {
-            "Authorization": `Bearer ${MAILTRAP_API_TOKEN}`,
+            "Api-Token": MAILTRAP_API_TOKEN, // Correct header for API token
             "Content-Type": "application/json",
           },
         }
