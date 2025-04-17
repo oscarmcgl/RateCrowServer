@@ -1,12 +1,13 @@
-const express = require("express");
-const cors = require("cors");
-const Filter = require("bad-words");
-const swearify = require("swearify");
-const { createClient } = require("@supabase/supabase-js");
-const redis = require("redis");
-const { promisify } = require("util");
-const { v4: uuidv4 } = require("uuid");
-const Mailtrap = require("mailtrap");
+import express from "express";
+import cors from "cors";
+import Filter from "bad-words";
+import swearify from "swearify";
+import { createClient } from "@supabase/supabase-js";
+import redis from "redis";
+import { promisify } from "util";
+import { v4 as uuidv4 } from "uuid";
+import dotenv from "dotenv";
+import Mailtrap from "mailtrap";
 
 // Initialize Redis client
 const redisClient = redis.createClient();
@@ -185,7 +186,7 @@ app.post("/crowmail/subscribe", async (req, res) => {
     // Send the verification email using Mailtrap
     await client.send({
       from: {
-        email: "no-reply@oscarmcglone.com",
+        email: SENDER_EMAIL,
         name: "CrowMail",
       },
       to: [
