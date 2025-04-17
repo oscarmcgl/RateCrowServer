@@ -1,19 +1,23 @@
-const express = require("express");
-const cors = require("cors");
-const Filter = require("bad-words");
-const swearify = require("swearify");
+import express from "express";
+import cors from "cors";
+import Filter from "bad-words";
+import swearify from "swearify";
 
 const app = express(); // Initialize the Express app
 
-const { createClient } = require("@supabase/supabase-js");
+
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const redis = require("redis");
-const { promisify } = require("util");
+import redis from "redis";
+import { promisify } from "util";
+
+import dotenv from "dotenv";
+dotenv.config();
 
 const redisClient = redis.createClient();
 const setAsync = promisify(redisClient.set).bind(redisClient);
