@@ -3,16 +3,9 @@ import cors from "cors";
 // import Filter from "bad-words";
 // import swearify from "swearify";
 import { createClient } from "@supabase/supabase-js";
-import redis from "redis";
-import { promisify } from "util";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
 
-// Initialize Redis client
-const redisClient = redis.createClient();
-const setAsync = promisify(redisClient.set).bind(redisClient);
-const getAsync = promisify(redisClient.get).bind(redisClient);
-const delAsync = promisify(redisClient.del).bind(redisClient);
 
 // Initialize Express app
 const app = express();
@@ -341,94 +334,110 @@ app.post("/validate-name", (req, res) => {
   res.json({ valid });
   }); */
 
-// CrowMail subscription endpoint
-app.post("/crowmail/subscribe", async (req, res) => {
-  const { email, type } = req.body;
-
-  if (!email || !type) {
-    return res.status(400).send("Missing email or subscription type");
-  }
-
-  try {
-    // Generate a unique verification key
-    const verificationKey = uuidv4();
-
-    // Store the key and email in Redis with a 24-hour expiration
-    await setAsync(verificationKey, JSON.stringify({ email, type }), "EX", 86400);
-
-    // Generate the verification URL
-    const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
-
-    // Send the verification email using Mailtrap API V2
-    const response = await axios.post(
-      "https://send.api.mailtrap.io/api/v1/send",
-      {
-        from: {
-          email: "no-reply@oscarmcglone.com",
-          name: "CrowMail",
-        },
-        to: [
-          {
-            email: email,
+  app.post("/crowmail/subscribe", async (req, res) => {
+    const { email, type } = req.body;
+  
+    if (!email || !type) {
+      return res.status(400).send("Missing email or subscription type");
+    }
+  
+    try {
+      // Generate a unique verification key
+      const verificationKey = uuidv4();
+  
+      // Calculate expiration time (24 hours from now)
+      const expiresAt = new Date(Date.now() + 86400 * 1000).toISOString();
+  
+      // Store the key, email, type, and expiration in Supabase
+      const { error: insertError } = await supabase
+        .from("verification_keys")
+        .insert([{ key: verificationKey, email, type, expires_at: expiresAt }]);
+  
+      if (insertError) throw insertError;
+  
+      // Generate the verification URL
+      const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
+  
+      // Send the verification email using Mailtrap API V2
+      const response = await axios.post(
+        "https://send.api.mailtrap.io/api/v1/send",
+        {
+          from: {
+            email: "no-reply@oscarmcglone.com",
+            name: "CrowMail",
           },
-        ],
-        subject: "Verify Your CrowMail Sign Up",
-        html: `<p>Click the link below to verify your sign up:</p>
-               <a href="${verificationUrl}">${verificationUrl}</a>`,
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${MAILTRAP_API_TOKEN}`,
-          "Content-Type": "application/json",
+          to: [
+            {
+              email: email,
+            },
+          ],
+          subject: "Verify Your CrowMail Sign Up",
+          html: `<p>Click the link below to verify your sign up:</p>
+                 <a href="${verificationUrl}">${verificationUrl}</a>`,
         },
+        {
+          headers: {
+            "Authorization": `Bearer ${MAILTRAP_API_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+  
+      if (response.status === 200) {
+        res.status(200).send("Verification email sent");
+      } else {
+        throw new Error("Failed to send email");
       }
-    );
-
-    if (response.status === 200) {
-      res.status(200).send("Verification email sent");
-    } else {
-      throw new Error("Failed to send email");
+    } catch (error) {
+      console.error("Error sending verification email:", error);
+      res.status(500).send("Error sending verification email");
     }
-  } catch (error) {
-    console.error("Error sending verification email:", error);
-    res.status(500).send("Error sending verification email");
-  }
-});
+  });
 
-// Verification endpoint
-app.get("/crowmail/verify", async (req, res) => {
-  const { key } = req.query;
-
-  if (!key) {
-    return res.status(400).send("Missing verification key");
-  }
-
-  try {
-    // Retrieve the email and type from Redis
-    const data = await getAsync(key);
-
-    if (!data) {
-      return res.status(400).send("Invalid or expired verification key");
+  app.get("/crowmail/verify", async (req, res) => {
+    const { key } = req.query;
+  
+    if (!key) {
+      return res.status(400).send("Missing verification key");
     }
-
-    const { email, type } = JSON.parse(data);
-
-    // Add the verified email to the database
-    const { error } = await supabase
-      .from("crowmail")
-      .insert([{ email, type }]);
-
-    if (error) throw error;
-
-    // Remove the key from Redis
-    await delAsync(key);
-
-    res.status(200).send("Email verified successfully");
-  } catch (error) {
-    console.error("Error verifying email:", error);
-    res.status(500).send("Error verifying email");
-  }
-});
+  
+    try {
+      // Retrieve the key from Supabase
+      const { data: verificationKey, error: fetchError } = await supabase
+        .from("verification_keys")
+        .select("*")
+        .eq("key", key)
+        .single();
+  
+      if (fetchError) throw fetchError;
+  
+      if (!verificationKey) {
+        return res.status(400).send("Invalid or expired verification key");
+      }
+  
+      const { email, type } = verificationKey;
+  
+      // Add the verified email to the database
+      const { error: insertError } = await supabase
+        .from("crowmail")
+        .insert([{ email, type }]);
+  
+      if (insertError) throw insertError;
+  
+      // Delete the key from Supabase
+      const { error: deleteError } = await supabase
+        .from("verification_keys")
+        .delete()
+        .eq("key", key);
+  
+      if (deleteError) throw deleteError;
+  
+      res.status(200).send("Email verified successfully");
+    } catch (error) {
+      console.error("Error verifying email:", error);
+      res.status(500).send("Error verifying email");
+    }
+  });
 
 // Health check endpoint
 app.get("/health", (req, res) => {
