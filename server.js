@@ -342,15 +342,13 @@ app.post("/validate-name", (req, res) => {
 
 // CROWMAIL 
 
-import pkg from "mailtrap";
-const { MailtrapClient } = pkg;
-
+import Mailtrap from "mailtrap";
 import { v4 as uuidv4 } from "uuid";
 
 // Configure Mailtrap Client
 const TOKEN = process.env.MAILTRAP_API_TOKEN; // Your Mailtrap API token
 const SENDER_EMAIL = "no-reply@oscarmcglone.com"; // Sender email address
-const client = new MailtrapClient({ token: TOKEN });
+const client = Mailtrap({ token: TOKEN }); // Initialize Mailtrap client
 
 app.post("/crowmail/subscribe", async (req, res) => {
   const { email, type } = req.body;
