@@ -6,11 +6,7 @@ const { createClient } = require("@supabase/supabase-js");
 const redis = require("redis");
 const { promisify } = require("util");
 const { v4: uuidv4 } = require("uuid");
-const dotenv = require("dotenv");
 const Mailtrap = require("mailtrap");
-
-// Load environment variables
-dotenv.config();
 
 // Initialize Redis client
 const redisClient = redis.createClient();
