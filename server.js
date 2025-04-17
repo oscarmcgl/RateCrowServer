@@ -338,7 +338,9 @@ app.post("/validate-name", (req, res) => {
 
 // CROWMAIL 
 
-import { MailtrapClient } from "mailtrap";
+import pkg from "mailtrap";
+const { MailtrapClient } = pkg;
+
 import { v4 as uuidv4 } from "uuid";
 
 // Configure Mailtrap Client
