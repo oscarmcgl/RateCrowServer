@@ -6,8 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import redis from "redis";
 import { promisify } from "util";
 import { v4 as uuidv4 } from "uuid";
-import dotenv from "dotenv";
-import Mailtrap from "mailtrap";
+import axios from "axios";
 
 // Initialize Redis client
 const redisClient = redis.createClient();
@@ -23,10 +22,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Configure Mailtrap Client
-const TOKEN = process.env.MAILTRAP_API_TOKEN; // Your Mailtrap API token
+const MAILTRAP_API_TOKEN = process.env.MAILTRAP_API_TOKEN;
+
 const SENDER_EMAIL = "no-reply@oscarmcglone.com"; // Sender email address
-const client = new Mailtrap.Client({ token: TOKEN }); // Initialize Mailtrap client
 
 // CORS configuration
 const allowedOrigins = [
@@ -183,23 +181,36 @@ app.post("/crowmail/subscribe", async (req, res) => {
     // Generate the verification URL
     const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
 
-    // Send the verification email using Mailtrap
-    await client.send({
-      from: {
-        email: SENDER_EMAIL,
-        name: "CrowMail",
-      },
-      to: [
-        {
-          email: email,
+    // Send the verification email using Mailtrap API V2
+    const response = await axios.post(
+      "https://send.api.mailtrap.io/api/v1/send",
+      {
+        from: {
+          email: "no-reply@oscarmcglone.com",
+          name: "CrowMail",
         },
-      ],
-      subject: "Verify Your CrowMail Sign Up",
-      html: `<p>Click the link below to verify your sign up:</p>
-             <a href="${verificationUrl}">${verificationUrl}</a>`,
-    });
+        to: [
+          {
+            email: email,
+          },
+        ],
+        subject: "Verify Your CrowMail Sign Up",
+        html: `<p>Click the link below to verify your sign up:</p>
+               <a href="${verificationUrl}">${verificationUrl}</a>`,
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${MAILTRAP_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-    res.status(200).send("Verification email sent");
+    if (response.status === 200) {
+      res.status(200).send("Verification email sent");
+    } else {
+      throw new Error("Failed to send email");
+    }
   } catch (error) {
     console.error("Error sending verification email:", error);
     res.status(500).send("Error sending verification email");
