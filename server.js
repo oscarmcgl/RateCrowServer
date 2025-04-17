@@ -360,7 +360,7 @@ app.post("/validate-name", (req, res) => {
   
       // Send the verification email using Mailtrap API V2
       const response = await axios.post(
-        "https://send.api.mailtrap.io/api/v1/send",
+        "https://send.api.mailtrap.io/api/send",
         {
           from: {
             email: "no-reply@oscarmcglone.com",
