@@ -1,6 +1,7 @@
 const express = require("express");
-const bodyParser = require("body-parser");
 const cors = require("cors");
+const Filter = require("bad-words");
+const swearify = require("swearify");
 
 const app = express(); // Initialize the Express app
 
@@ -10,6 +11,14 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const redis = require("redis");
+const { promisify } = require("util");
+
+const redisClient = redis.createClient();
+const setAsync = promisify(redisClient.set).bind(redisClient);
+const getAsync = promisify(redisClient.get).bind(redisClient);
+const delAsync = promisify(redisClient.del).bind(redisClient);
 
 // CORS configuration
 const allowedOrigins = [
@@ -300,6 +309,120 @@ app.post("/names", async (req, res) => {
     res.status(500).send("Error fetching names for crow");
   }
 });
+
+const filter = new Filter();
+filter.addWords(); //! to later
+
+function normaliseInput(name) {
+  return name.trim().toLowerCase();
+}
+
+function isValidCrowName(name) {
+  if (!name || typeof name !== 'string') return false;
+
+  const normalised = normaliseInput(name);
+
+  if (normalised.length < 2 || normalised.length > 30) return false;
+  if (filter.isProfane(normalised)) return false;
+  if (swearify(normalised)) return false;
+
+  return true;
+}
+
+app.post("/validate-name", (req, res) => {
+  const { name } = req.body;
+
+  const valid = isValidCrowName(name);
+  res.json({ valid });
+  });
+
+// CROWMAIL 
+
+import { MailtrapClient } from "@mailtrap/mailtrap";
+import { v4 as uuidv4 } from "uuid";
+
+// Configure Mailtrap Client
+const TOKEN = process.env.MAILTRAP_API_TOKEN; // Your Mailtrap API token
+const SENDER_EMAIL = "no-reply@oscarmcglone.com"; // Sender email address
+const client = new MailtrapClient({ token: TOKEN });
+
+app.post("/crowmail/subscribe", async (req, res) => {
+  const { email, type } = req.body;
+
+  if (!email || !type) {
+    return res.status(400).send("Missing email or subscription type");
+  }
+
+  try {
+    // Generate a unique verification key
+    const verificationKey = uuidv4();
+
+    // Store the key and email in Redis with a 24-hour expiration
+    await setAsync(verificationKey, JSON.stringify({ email, type }), "EX", 86400);
+
+    // Generate the verification URL
+    const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
+
+    // Send the verification email using Mailtrap
+    await client.send({
+      from: {
+        email: SENDER_EMAIL,
+        name: "CrowMail",
+      },
+      to: [
+        {
+          email: email,
+        },
+      ],
+      subject: "Verify Your CrowMail Sign Up",
+      html: `<p>Click the link below to verify your sign up:</p>
+             <a href="${verificationUrl}">${verificationUrl}</a>`,
+    });
+
+    res.status(200).send("Verification email sent");
+  } catch (error) {
+    console.error("Error sending verification email:", error);
+    res.status(500).send("Error sending verification email");
+  }
+});
+
+app.get("/crowmail/verify", async (req, res) => {
+  const { key } = req.query;
+
+  if (!key) {
+    return res.status(400).send("Missing verification key");
+  }
+
+  try {
+    // Retrieve the email and type from Redis
+    const data = await getAsync(key);
+
+    if (!data) {
+      return res.status(400).send("Invalid or expired verification key");
+    }
+
+    const { email, type } = JSON.parse(data);
+
+    // Add the verified email to the database
+    const { error } = await supabase
+      .from("crowmail")
+      .insert([{ email, type}]);
+
+    if (error) throw error;
+
+    // Remove the key from Redis
+    await delAsync(key);
+
+    res.status(200).send("Email verified successfully");
+  } catch (error) {
+    console.error("Error verifying email:", error);
+    res.status(500).send("Error verifying email");
+  }
+});
+
+
+
+
 
 //Health Check for Uptime Robot
 app.get("/health", (req, res) => {
