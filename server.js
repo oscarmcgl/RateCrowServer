@@ -391,7 +391,7 @@ app.post("/validate-name", (req, res) => {
     }
     // If no rows are found, continue to the next step
   }
-  
+
     try {
       // Generate a unique verification key
       const verificationKey = uuidv4();
@@ -454,49 +454,52 @@ app.post("/validate-name", (req, res) => {
       });
 
   app.post("/crowmail/verify", async (req, res) => {
-    const { key } = req.query;
-  
-    if (!key) {
-      return res.status(400).send("Missing verification key");
+  const { key } = req.query;
+
+  if (!key) {
+    return res.status(400).send("Missing verification key");
+  }
+
+  try {
+    // Retrieve the key from Supabase
+    const { data: verificationKey, error: fetchError } = await supabase
+      .from("verification_keys")
+      .select("*")
+      .eq("key", key)
+      .single();
+
+    if (fetchError && fetchError.code !== "PGRST116") {
+      // If the error is not "No rows found", throw it
+      throw fetchError;
     }
-  
-    try {
-      // Retrieve the key from Supabase
-      const { data: verificationKey, error: fetchError } = await supabase
-        .from("verification_keys")
-        .select("*")
-        .eq("key", key)
-        .single();
-  
-      if (fetchError) throw fetchError;
-  
-      if (!verificationKey) {
-        return res.status(400).send("Invalid or expired verification key");
-      }
-  
-      const { email, type } = verificationKey;
-  
-      // Add the verified email to the database
-      const { error: insertError } = await supabase
-        .from("crowmail")
-        .insert([{ email, type }]);
-  
-      if (insertError) throw insertError;
-  
-      // Delete the key from Supabase
-      const { error: deleteError } = await supabase
-        .from("verification_keys")
-        .delete()
-        .eq("key", key);
-  
-      if (deleteError) throw deleteError;
-  
-      res.status(200).send("Email verified successfully");
-    } catch (error) {
-      console.error("Error verifying email:", error);
-      res.status(500).send("Error verifying email");
+
+    if (!verificationKey) {
+      return res.status(400).send("Invalid or expired verification key");
     }
-  });
+
+    const { email, type } = verificationKey;
+
+    // Add the verified email to the database
+    const { error: insertError } = await supabase
+      .from("crowmail")
+      .insert([{ email, type }]);
+
+    if (insertError) throw insertError;
+
+    // Delete the key from Supabase
+    const { error: deleteError } = await supabase
+      .from("verification_keys")
+      .delete()
+      .eq("key", key);
+
+    if (deleteError) throw deleteError;
+
+    res.status(200).send("Email verified successfully");
+  } catch (error) {
+    console.error("Error verifying email:", error);
+    res.status(500).send("Error verifying email");
+  }
+});
 
 // Health check endpoint
 app.get("/health", (req, res) => {
