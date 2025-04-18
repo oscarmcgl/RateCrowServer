@@ -433,7 +433,7 @@ app.post("/validate-name", (req, res) => {
         <p style="font-size: 16px;">You’ve just taken the first step toward receiving magnificent crow pictures ${type}.</p>
         <p style="font-size: 16px;">Please confirm your crowing by clicking below:</p>
         <a href="${verificationUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #2d5d63; color: white; text-decoration: none; border-radius: 8px; font-size: 16px;">Confirm Crowing</a>
-        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://crows.oscarmcglone.com" style="color: #777; text-decoration: none; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
+        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://crows.oscarmcglone.com" style="color: #777; text-decoration: underline; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
           </div>
         </body>`,
           },
