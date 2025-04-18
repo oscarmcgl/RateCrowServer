@@ -336,7 +336,48 @@ app.post("/validate-name", (req, res) => {
     if (!email || !type) {
       return res.status(400).send("Missing email or subscription type");
     }
+
+    try {
+      // Check if the email is already subscribed
+      const { data: existingSubscription, error: fetchError } = await supabase
+        .from("crowmail")
+        .select("*")
+        .eq("email", email)
+        .single();
   
+      if (fetchError) throw fetchError;
+  
+      if (existingSubscription) {
+        return res.status(400).send("Email already subscribed");
+      }
+    } catch (error) {
+      console.error("Error signing up:", error);
+      return res.status(500).send("Error signing up for CrowMail");
+    }
+
+    try {
+      // Check if the email already exists in the verification_keys table
+      const { data: existingKey, error: fetchError } = await supabase
+        .from("verification_keys")
+        .select("*")
+        .eq("email", email)
+        .single();
+  
+      if (fetchError && fetchError.code !== "PGRST116") {
+        // If the error is not "No rows found", throw it
+        throw fetchError;
+      }
+  
+      if (existingKey) {
+        return res.status(400).send("This email is already registered. Please check your inbox for the verification email.");
+      }
+  
+    } catch (error) {
+      console.error("Error checking existing verification key:", error);
+      return res.status(500).send("Error checking existing verification key");
+    }
+
+
     try {
       // Generate a unique verification key
       const verificationKey = uuidv4();
