@@ -439,7 +439,7 @@ app.post("/validate-name", (req, res) => {
         }
       });
 
-  app.get("/crowmail/verify", async (req, res) => {
+  app.post("/crowmail/verify", async (req, res) => {
     const { key } = req.query;
   
     if (!key) {
