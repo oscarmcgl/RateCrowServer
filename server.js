@@ -501,6 +501,44 @@ app.post("/validate-name", (req, res) => {
   }
 });
 
+app.post("/crowmail/unsubscribe", async (req, res) => {
+  const { user_id } = req.body;
+
+  if (!user_id) {
+    return res.status(400).send("Missing user_id");
+  }
+
+  try {
+    const { data: existingUser, error: fetchError } = await supabase
+      .from("crowmail")
+      .select("*")
+      .eq("user_id", user_id)
+      .single();
+
+    if (fetchError && fetchError.code !== "PGRST116") {
+      // If the error is not "No rows found", throw it
+      throw fetchError;
+    }
+
+    if (!existingUser) {
+      return res.status(404).send("User not found in subscription list");
+    }
+
+    // Delete the user from the crowmail table
+    const { error: deleteError } = await supabase
+      .from("crowmail")
+      .delete()
+      .eq("user_id", user_id);
+
+    if (deleteError) throw deleteError;
+
+    res.status(200).send("Unsubscribed successfully");
+  } catch (error) {
+    console.error("Error unsubscribing user:", error);
+    res.status(500).send("Error unsubscribing user");
+  }
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
