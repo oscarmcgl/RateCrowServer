@@ -15,10 +15,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MAILTRAP_API_TOKEN = process.env.MAILTRAP_API_TOKEN;
-
-const SENDER_EMAIL = "no-reply@oscarmcglone.com"; // Sender email address
-
 // CORS configuration
 const allowedOrigins = [
   "https://oscarmcglone.com",
@@ -355,46 +351,52 @@ app.post("/validate-name", (req, res) => {
   
       if (insertError) throw insertError;
   
-      // Generate the verification URL
-      const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
-  
-      // Send the verification email using Mailtrap API
-      const response = await axios.post(
-        "https://send.api.mailtrap.io/api/send", // Correct endpoint
-        {
-          from: {
-            email: "no-reply@oscarmcglone.com",
-            name: "CrowMail",
-          },
-          to: [
-            {
-              email: email,
-              name: email.split("@")[0], // Use the part before "@" as the name
-            },
-          ],
-          subject: "Verify Your CrowMail Sign Up",
-          text: `Click the link below to verify your sign up: ${verificationUrl}`,
-          html: `<p>Click the link below to verify your sign up:</p>
-                 <a href="${verificationUrl}">${verificationUrl}</a>`,
+      try {
+        // Generate the verification URL
+        const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
+      
+        const MAILTRAP_API_TOKEN = process.env.MAILTRAP_TOKEN;
+      
+        const response = await axios.post(
+          "https://send.api.mailtrap.io/api/send", // Correct endpoint
+          {
+        from: {
+          email: "no-reply@oscarmcglone.com",
+          name: "CrowMail",
         },
-        {
-          headers: {
-            "Api-Token": MAILTRAP_API_TOKEN, // Correct header for API token
-            "Content-Type": "application/json",
+        to: [
+          {
+            email: email,
           },
+        ],
+        subject: "Verify Your CrowMail Sign Up",
+        text: `Click the link below to verify your sign up: ${verificationUrl}`,
+        html: `<p>Click the link below to verify your sign up:</p>
+           <a href="${verificationUrl}">${verificationUrl}</a>`,
+          },
+          {
+        headers: {
+          "Api-Token": MAILTRAP_API_TOKEN, // Correct header for API token
+          "Content-Type": "application/json",
+        },
+          }
+        );
+      
+        if (response.status === 200) {
+          console.log("Verification email sent successfully");
+          res.status(200).send("Verification email sent successfully");
+        } else {
+          throw new Error("Failed to send email");
         }
-      );
-  
-      if (response.status === 200) {
-        res.status(200).send("Verification email sent");
-      } else {
-        throw new Error("Failed to send email");
-      }
-    } catch (error) {
-      console.error("Error sending verification email:", error);
-      res.status(500).send("Error sending verification email");
-    }
-  });
+      } catch (error) {
+        console.error("Error sending verification email:", error);
+            res.status(500).send("Error sending verification email");
+          }
+        } catch (error) {
+          console.error("Error processing subscription:", error);
+          res.status(500).send("Error processing subscription");
+        }
+      });
 
   app.get("/crowmail/verify", async (req, res) => {
     const { key } = req.query;
