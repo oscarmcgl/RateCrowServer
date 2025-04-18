@@ -428,12 +428,12 @@ app.post("/validate-name", (req, res) => {
         html: `
         <body style="font-family: monospace; background-color: #f9f8ec; padding: 30px; text-align: center; color: #333;">
         <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-        <h1 style="color: #2d5d63;">🪶 Welcome to CrowMail!</h1>
-        <p style="font-size: 16px;">Hey there feather friend,</p>
-        <p style="font-size: 16px;">You’ve just taken the first step toward receiving magnificent crow pictures.</p>
+        <h1 style="color: #2d5d63;">🐦‍⬛ Welcome to CrowMail!</h1>
+        <p style="font-size: 16px;">Hey there,</p>
+        <p style="font-size: 16px;">You’ve just taken the first step toward receiving magnificent crow pictures ${type}.</p>
         <p style="font-size: 16px;">Please confirm your crowing by clicking below:</p>
         <a href="${verificationUrl}">${verificationUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #2d5d63; color: white; text-decoration: none; border-radius: 8px; font-size: 16px;">Confirm Crowing</a>
-        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for CrowMail, you can ignore this message.</p>
+        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://crows.oscarmcglone.com style="color: #777; text-decoration: none; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
           </div>
         </body>`,
           },
