@@ -408,7 +408,7 @@ app.post("/validate-name", (req, res) => {
   
       try {
         // Generate the verification URL
-        const verificationUrl = `https://crows.oscarmcglone.com/crowmail/verify?key=${verificationKey}`;
+        const verificationUrl = `https://ratethiscrow.site/crowmail/verify?key=${verificationKey}`;
       
         const MAILTRAP_API_TOKEN = process.env.MAILTRAP_TOKEN;
       
@@ -416,7 +416,7 @@ app.post("/validate-name", (req, res) => {
           "https://send.api.mailtrap.io/api/send", // Correct endpoint
           {
         from: {
-          email: "no-reply@oscarmcglone.com",
+          email: "no-reply@ratethiscrow.site",
           name: "CrowMail",
         },
         to: [
@@ -433,7 +433,7 @@ app.post("/validate-name", (req, res) => {
         <p style="font-size: 16px;">You’ve just taken the first step toward receiving magnificent crow pictures ${type}.</p>
         <p style="font-size: 16px;">Please confirm your crowing by clicking below:</p>
         <a href="${verificationUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #2d5d63; color: white; text-decoration: none; border-radius: 8px; font-size: 16px;">Confirm Crowing</a>
-        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://crows.oscarmcglone.com" style="color: #777; text-decoration: underline; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
+        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://ratethiscrow.site" style="color: #777; text-decoration: underline; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
           </div>
         </body>`,
           },
