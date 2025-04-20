@@ -5,12 +5,13 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
+import { Resend } from "resend";
 
 
-// Initialize Express app
+// Initialise Express app
 const app = express();
 
-// Initialize Supabase client
+// Initialise Supabase client
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -410,22 +411,14 @@ app.post("/validate-name", (req, res) => {
         // Generate the verification URL
         const verificationUrl = `https://ratethiscrow.site/crowmail/verify?key=${verificationKey}`;
       
-        const MAILTRAP_API_TOKEN = process.env.MAILTRAP_TOKEN;
-      
-        const response = await axios.post(
-          "https://send.api.mailtrap.io/api/send", // Correct endpoint
-          {
-        from: {
-          email: "no-reply@ratethiscrow.site",
-          name: "CrowMail",
-        },
-        to: [
-          {
-            email: email,
-          },
-        ],
-        subject: "Verify Your CrowMail Sign Up",
-        html: `
+        const resend = new Resend(process.env.RESEND_API_KEY);
+
+        ( async function () {
+          const { data, error } = await resend.emails.send({
+            from: "CrowMail <no-reply@ratethiscrow.site>",
+            to: email,
+            subject: "Verify Your CrowMail Sign Up",
+            html: `
         <body style="font-family: monospace; background-color: #f9f8ec; padding: 30px; text-align: center; color: #333;">
         <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
         <h1 style="color: #2d5d63;">🐦‍⬛ Welcome to CrowMail!</h1>
@@ -436,30 +429,26 @@ app.post("/validate-name", (req, res) => {
         <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://ratethiscrow.site" style="color: #777; text-decoration: underline; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
           </div>
         </body>`,
-          },
-          {
-        headers: {
-          "Api-Token": MAILTRAP_API_TOKEN, // Correct header for API token
-          "Content-Type": "application/json",
-        },
-          }
-        );
-      
-        if (response.status === 200) {
-          console.log("Verification email sent successfully");
-          res.status(200).send("Verification email sent successfully");
-        } else {
-          throw new Error("Failed to send email");
+        });
+
+        if (error) {
+          return console.error({ error });
+
         }
-      } catch (error) {
-        console.error("Error sending verification email:", error);
-            res.status(500).send("Error sending verification email");
+
+        console.log("Email sent successfully:", data);
+        res.status(200).send("Verification email sent successfully");
+
+        })();
+            } catch (emailError) {
+              console.error("Error sending verification email:", emailError);
+              res.status(500).send("Error sending verification email");
+            }
+          } catch (error) {
+            console.error("Error generating verification key:", error);
+            res.status(500).send("Error generating verification key");
           }
-        } catch (error) {
-          console.error("Error processing subscription:", error);
-          res.status(500).send("Error processing subscription");
-        }
-      });
+        });
 
   app.post("/crowmail/verify", async (req, res) => {
   const { key } = req.query;
