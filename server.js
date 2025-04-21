@@ -414,7 +414,7 @@ app.post("/validate-name", (req, res) => {
 
         ( async function () {
           const { data, error } = await resend.emails.send({
-            from: "CrowMail <no-reply@ratethiscrow.site>",
+            from: "CrowMail <crowmail@ratethiscrow.site>",
             to: email,
             subject: "Verify Your CrowMail Sign Up",
             html: `
