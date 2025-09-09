@@ -22,7 +22,7 @@ const allowedOrigins = [
   "https://crows.oscarmcglone.com",
   "https://ratethiscrow.site",
   "http://127.0.0.1:5500",
-  "https://rate.oscarmcglone.com"
+  "https://rate.oscarmcglone.com",
 ];
 
 const corsOptions = {
