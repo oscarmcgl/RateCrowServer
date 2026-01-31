@@ -15,6 +15,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// In-memory cache for session data (avoid repeats)
+const sessionCache = new Map();
+
 // CORS configuration
 const allowedOrigins = [
   "https://oscarmcglone.com",
@@ -44,6 +47,320 @@ app.options("*", cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ============= ELO RATING UTILITY =============
+function calculateElo(winnerElo, loserElo, kFactor = 32) {
+  const expectedScoreWinner = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
+  const expectedScoreLoser = 1 - expectedScoreWinner;
+
+  const newWinnerElo = Math.round(winnerElo + kFactor * (1 - expectedScoreWinner));
+  const newLoserElo = Math.round(loserElo + kFactor * (0 - expectedScoreLoser));
+
+  return { newWinnerElo, newLoserElo, expectedScoreWinner };
+}
+
+// Calculate percentile: what % of crows does this crow beat?
+async function calculatePercentile(crowId) {
+  try {
+    const { data: crow, error: crowError } = await supabase
+      .from("crows")
+      .select("elo_rating")
+      .eq("crow_id", crowId)
+      .single();
+
+    if (crowError || !crow) return 50;
+
+    const { data: allCrows, error: allError } = await supabase
+      .from("crows")
+      .select("elo_rating")
+      .eq("active", true);
+
+    if (allError || !allCrows) return 50;
+
+    const crowsBetter = allCrows.filter(c => c.elo_rating < crow.elo_rating).length;
+    return (crowsBetter / allCrows.length) * 100;
+  } catch (error) {
+    console.error("Error calculating percentile:", error);
+    return 50;
+  }
+}
+
+// ============= PAIRWISE VOTING ENDPOINTS =============
+
+// GET /pair - Fetch a pair of crows
+app.get("/pair", async (req, res) => {
+  const { session_id } = req.query;
+
+  if (!session_id) {
+    return res.status(400).json({ error: "Missing session_id" });
+  }
+
+  try {
+    // Create or retrieve session
+    if (!sessionCache.has(session_id)) {
+      sessionCache.set(session_id, {
+        recent_crow_ids: [],
+        created_at: new Date(),
+      });
+    }
+
+    const session = sessionCache.get(session_id);
+
+    // Get all active crows
+    const { data: activeCrows, error: crowsError } = await supabase
+      .from("crows")
+      .select("crow_id, img_url, elo_rating, is_crow_of_the_day, credit_name, credit_link")
+      .eq("active", true)
+      .order("elo_rating", { ascending: true });
+
+    if (crowsError || !activeCrows || activeCrows.length < 2) {
+      return res.status(404).json({ error: "Not enough active crows" });
+    }
+
+    // Filter out recent crows to avoid repeats
+    const availableCrows = activeCrows.filter(c => !session.recent_crow_ids.includes(c.crow_id));
+
+    if (availableCrows.length < 2) {
+      // Reset if we've seen too many
+      session.recent_crow_ids = [];
+    }
+
+    // Bias selection toward low confidence (lower elo/fewer games)
+    // Weighted random selection favoring crows with fewer games or lower confidence
+    const weighted = availableCrows.map(c => ({
+      ...c,
+      weight: 1 / (Math.max(1, c.elo_rating - 1400)), // Lower elo = higher weight
+    }));
+
+    const totalWeight = weighted.reduce((sum, c) => sum + c.weight, 0);
+    let rand1 = Math.random() * totalWeight;
+    let rand2 = Math.random() * totalWeight;
+
+    let crow1 = weighted[0];
+    let crow2 = weighted[0];
+
+    for (const crow of weighted) {
+      rand1 -= crow.weight;
+      if (rand1 <= 0 && !crow1) crow1 = crow;
+    }
+
+    for (const crow of weighted) {
+      rand2 -= crow.weight;
+      if (rand2 <= 0 && crow.crow_id !== crow1.crow_id) {
+        crow2 = crow;
+        break;
+      }
+    }
+
+    // Fallback if selection failed
+    if (crow1.crow_id === crow2.crow_id) {
+      crow2 = availableCrows.find(c => c.crow_id !== crow1.crow_id);
+    }
+
+    // Create voting pair record
+    const pairId = uuidv4();
+    const { error: pairError } = await supabase
+      .from("voting_pairs")
+      .insert([{
+        pair_id: pairId,
+        session_id,
+        crow1_id: crow1.crow_id,
+        crow2_id: crow2.crow_id,
+      }]);
+
+    if (pairError) {
+      console.error("Error creating pair record:", pairError);
+    }
+
+    // Update session recent crows
+    session.recent_crow_ids.push(crow1.crow_id, crow2.crow_id);
+    if (session.recent_crow_ids.length > 20) {
+      session.recent_crow_ids.shift();
+    }
+
+    res.json({
+      pair_id: pairId,
+      crow1: {
+        crow_id: crow1.crow_id,
+        img_url: crow1.img_url,
+        elo_rating: crow1.elo_rating,
+        is_crow_of_the_day: crow1.is_crow_of_the_day,
+        credit_name: crow1.credit_name || "Unknown",
+        credit_link: crow1.credit_link || "#",
+      },
+      crow2: {
+        crow_id: crow2.crow_id,
+        img_url: crow2.img_url,
+        elo_rating: crow2.elo_rating,
+        is_crow_of_the_day: crow2.is_crow_of_the_day,
+        credit_name: crow2.credit_name || "Unknown",
+        credit_link: crow2.credit_link || "#",
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching pair:", error);
+    res.status(500).json({ error: "Failed to fetch pair" });
+  }
+});
+
+// POST /vote - Submit a vote
+app.post("/vote", async (req, res) => {
+  const { session_id, pair_id, winner_id, loser_id } = req.body;
+
+  if (!session_id || !pair_id || !winner_id || !loser_id) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  try {
+    // Fetch winner and loser
+    const { data: winner, error: winnerError } = await supabase
+      .from("crows")
+      .select("*")
+      .eq("crow_id", winner_id)
+      .single();
+
+    const { data: loser, error: loserError } = await supabase
+      .from("crows")
+      .select("*")
+      .eq("crow_id", loser_id)
+      .single();
+
+    if (winnerError || loserError || !winner || !loser) {
+      return res.status(404).json({ error: "Crow not found" });
+    }
+
+    // Calculate new Elo ratings
+    const k = 32; // K-factor
+    const { newWinnerElo, newLoserElo, expectedScoreWinner } = calculateElo(
+      winner.elo_rating,
+      loser.elo_rating,
+      k
+    );
+
+    // Update crows with new Elo and games_played
+    const { error: updateWinnerError } = await supabase
+      .from("crows")
+      .update({
+        elo_rating: newWinnerElo,
+        games_played: (winner.games_played || 0) + 1,
+      })
+      .eq("crow_id", winner_id);
+
+    const { error: updateLoserError } = await supabase
+      .from("crows")
+      .update({
+        elo_rating: newLoserElo,
+        games_played: (loser.games_played || 0) + 1,
+      })
+      .eq("crow_id", loser_id);
+
+    if (updateWinnerError || updateLoserError) {
+      throw new Error("Failed to update Elo ratings");
+    }
+
+    // Record the vote
+    const { error: voteError } = await supabase
+      .from("votes")
+      .insert([{
+        pair_id,
+        session_id,
+        winner_crow_id: winner_id,
+        loser_crow_id: loser_id,
+        winner_elo_before: winner.elo_rating,
+        loser_elo_before: loser.elo_rating,
+        winner_elo_after: newWinnerElo,
+        loser_elo_after: newLoserElo,
+        k_factor: k,
+      }]);
+
+    if (voteError) {
+      console.error("Error recording vote:", voteError);
+    }
+
+    // Calculate percentile for winner
+    const winnerPercentile = await calculatePercentile(winner_id);
+
+    res.json({
+      winner_elo_before: winner.elo_rating,
+      winner_elo_after: newWinnerElo,
+      loser_elo_before: loser.elo_rating,
+      loser_elo_after: newLoserElo,
+      winner_percentile: winnerPercentile / 100,
+    });
+  } catch (error) {
+    console.error("Error submitting vote:", error);
+    res.status(500).json({ error: "Failed to submit vote" });
+  }
+});
+
+// GET /crow-of-the-day - Get today's featured crow
+app.get("/crow-of-the-day", async (req, res) => {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+
+    // Check if we already have a COTD for today
+    const { data: cotdHistory, error: historyError } = await supabase
+      .from("crow_of_the_day_history")
+      .select("crow_id")
+      .eq("selected_date", today)
+      .single();
+
+    if (cotdHistory) {
+      // Return existing COTD
+      const { data: crow, error: crowError } = await supabase
+        .from("crows")
+        .select("*")
+        .eq("crow_id", cotdHistory.crow_id)
+        .single();
+
+      if (crowError || !crow) {
+        return res.status(500).json({ error: "Failed to fetch COTD" });
+      }
+
+      return res.json(crow);
+    }
+
+    // Select a new COTD (bias toward lower confidence crows)
+    const { data: activeCrows, error: crowsError } = await supabase
+      .from("crows")
+      .select("*")
+      .eq("active", true)
+      .order("games_played", { ascending: true })
+      .limit(10);
+
+    if (crowsError || !activeCrows || activeCrows.length === 0) {
+      return res.status(404).json({ error: "No active crows found" });
+    }
+
+    // Random selection from the low-confidence ones
+    const selectedCrow = activeCrows[Math.floor(Math.random() * activeCrows.length)];
+
+    // Mark as COTD
+    const { error: updateError } = await supabase
+      .from("crows")
+      .update({ is_crow_of_the_day: true })
+      .eq("crow_id", selectedCrow.crow_id);
+
+    // Record in history
+    const { error: historyInsertError } = await supabase
+      .from("crow_of_the_day_history")
+      .insert([{
+        crow_id: selectedCrow.crow_id,
+        selected_date: today,
+      }]);
+
+    if (updateError || historyInsertError) {
+      console.error("Error setting COTD:", updateError || historyInsertError);
+    }
+
+    res.json(selectedCrow);
+  } catch (error) {
+    console.error("Error fetching COTD:", error);
+    res.status(500).json({ error: "Failed to fetch COTD" });
+  }
+});
+
+// ============= LEGACY ENDPOINTS (with active filter) =============
+
 // Password validation endpoint
 app.post("/validate-password", (req, res) => {
   const { password } = req.body;
@@ -56,12 +373,13 @@ app.post("/validate-password", (req, res) => {
   }
 });
 
-// Return random crow_id, img_url, avg_rating, and rating_count from the sheet
+// Return random active crow
 app.get("/random", async (req, res) => {
   try {
     const { data: crows, error } = await supabase
       .from("crows")
-      .select("*");
+      .select("*")
+      .eq("active", true);
 
     if (error) throw error;
 
@@ -77,7 +395,7 @@ app.get("/random", async (req, res) => {
   }
 });
   
-// Send a rating with crow_id and rating to sheet
+// Send a rating (legacy endpoint)
 app.post("/rate", async (req, res) => {
   const { crow_id, rating } = req.body;
 
@@ -115,7 +433,7 @@ app.post("/rate", async (req, res) => {
   }
 });
   
-// Upload a new crow image with img_url creating a new crow_id
+// Upload a new crow image
 app.post("/upload", async (req, res) => {
   const { img_url, credit_name = "Unknown", credit_link = "#"} = req.body;
 
@@ -124,20 +442,27 @@ app.post("/upload", async (req, res) => {
   }
 
   try {
-    // Fetch all existing rows to determine the next crow_id
     const { data: crows, error: fetchError } = await supabase
       .from("crows")
       .select("crow_id");
 
     if (fetchError) throw fetchError;
 
-    // Generate the new crow_id based on the number of rows
     const newCrowId = `crow_${crows.length + 1}`;
 
-    // Insert the new crow into the database
     const { error: insertError } = await supabase
       .from("crows")
-      .insert([{ crow_id: newCrowId, img_url, avg_rating: 0, rating_count: 0, credit_name, credit_link }]);
+      .insert([{
+        crow_id: newCrowId,
+        img_url,
+        avg_rating: 0,
+        rating_count: 0,
+        credit_name,
+        credit_link,
+        active: true,
+        elo_rating: 1500,
+        games_played: 0,
+      }]);
 
     if (insertError) throw insertError;
 
@@ -148,13 +473,14 @@ app.post("/upload", async (req, res) => {
   }
 });
   
-// Return the crow_id, img_url, avg_rating, and rating_count for top leaderboard 25%
+// Return top 25% of active crows
 app.get("/leaderboard", async (req, res) => {
   try {
     const { data: crows, error } = await supabase
       .from("crows")
       .select("*")
-      .order("avg_rating", { ascending: false });
+      .eq("active", true)
+      .order("elo_rating", { ascending: false });
 
     if (error) throw error;
 
@@ -166,13 +492,14 @@ app.get("/leaderboard", async (req, res) => {
   }
 });
 
-// Return the crow_id, img_url, avg_rating, and rating_count for all crows in lb fashion 
+// Return all active crows
 app.get("/all-crows", async (req, res) => {
   try {
     const { data: crows, error } = await supabase
       .from("crows")
       .select("*")
-      .order("avg_rating", { ascending: false });
+      .eq("active", true)
+      .order("elo_rating", { ascending: false });
 
     if (error) throw error;
 
@@ -187,6 +514,7 @@ app.get("/all-crows", async (req, res) => {
   }
 });
 
+// Get specific crow by ID
 app.get("/crow/:id", async (req, res) => {
   const crowId = req.params.id;
 
@@ -218,6 +546,7 @@ app.get("/crow/:id", async (req, res) => {
   }
 });
 
+// Add a name suggestion for a crow
 app.post("/new-name", async (req, res) => {
   const { crow_id, name } = req.body;
 
@@ -226,7 +555,7 @@ app.post("/new-name", async (req, res) => {
   }
 
   try {
-    const nameId = `name_${Date.now()}`; // Generate a unique name_id
+    const nameId = `name_${Date.now()}`;
     const { error } = await supabase
       .from("names")
       .insert([{ crow_id, name_id: nameId, name, upvotes: 0, downvotes: 0 }]);
@@ -240,8 +569,9 @@ app.post("/new-name", async (req, res) => {
   }
 });
 
+// Vote on a name
 app.post("/name-vote", async (req, res) => {
-  const { crow_id, name_id, vote_type } = req.body; // `vote_type` should be "upvote" or "downvote"
+  const { crow_id, name_id, vote_type } = req.body;
 
   if (!crow_id || !name_id || !vote_type) {
     return res.status(400).send("Missing crow_id, name_id, or vote_type");
@@ -281,6 +611,7 @@ app.post("/name-vote", async (req, res) => {
   }
 });
 
+// Fetch names for a crow
 app.post("/names", async (req, res) => {
   const { crow_id } = req.body;
 
@@ -297,7 +628,6 @@ app.post("/names", async (req, res) => {
 
     if (error) throw error;
 
-    // Return an empty array if no names are found
     res.json(names || []);
   } catch (error) {
     console.error("Error fetching names for crow:", error);
@@ -305,42 +635,16 @@ app.post("/names", async (req, res) => {
   }
 });
 
-/* const filter = new Filter();
-filter.addWords(); //! to later
+// ============= CROWMAIL ENDPOINTS =============
 
-function normaliseInput(name) {
-  return name.trim().toLowerCase();
-}
+app.post("/crowmail/subscribe", async (req, res) => {
+  const { email, type } = req.body;
 
-function isValidCrowName(name) {
-  if (!name || typeof name !== 'string') return false;
+  if (!email || !type) {
+    return res.status(400).send("Missing email or subscription type");
+  }
 
-  const normalised = normaliseInput(name);
-
-  if (normalised.length < 2 || normalised.length > 30) return false;
-  if (filter.isProfane(normalised)) return false;
-  if (swearify(normalised)) return false;
-
-  return true;
-}
-
-app.post("/validate-name", (req, res) => {
-  const { name } = req.body;
-
-  const valid = isValidCrowName(name);
-  res.json({ valid });
-  }); */
-
-  app.post("/crowmail/subscribe", async (req, res) => {
-    const { email, type } = req.body;
-  
-    if (!email || !type) {
-      return res.status(400).send("Missing email or subscription type");
-    }
-
-    
   try {
-    // Check if the email is already subscribed
     const { data: existingSubscription, error: fetchError } = await supabase
       .from("crowmail")
       .select("*")
@@ -348,7 +652,6 @@ app.post("/validate-name", (req, res) => {
       .single();
 
     if (fetchError && fetchError.code !== "PGRST116") {
-      // If the error is not "No rows found", throw it
       throw fetchError;
     }
 
@@ -360,11 +663,9 @@ app.post("/validate-name", (req, res) => {
       console.error("Error signing up:", error);
       return res.status(500).send("Error signing up for CrowMail");
     }
-    // If no rows are found, continue to the next step
   }
 
   try {
-    // Check if the email already exists in the verification_keys table
     const { data: existingKey, error: fetchError } = await supabase
       .from("verification_keys")
       .select("*")
@@ -372,85 +673,71 @@ app.post("/validate-name", (req, res) => {
       .single();
 
     if (fetchError && fetchError.code !== "PGRST116") {
-      // If the error is not "No rows found", throw it
       throw fetchError;
     }
 
     if (existingKey) {
       return res
         .status(400)
-        .send(
-          "This email is already registered. Please check your inbox for the verification email."
-        );
+        .send("This email is already registered. Please check your inbox for the verification email.");
     }
   } catch (error) {
     if (error.code !== "PGRST116") {
       console.error("Error checking existing verification key:", error);
-      return res
-        .status(500)
-        .send("Error checking existing verification key");
+      return res.status(500).send("Error checking existing verification key");
     }
-    // If no rows are found, continue to the next step
   }
 
-    try {
-      // Generate a unique verification key
-      const verificationKey = uuidv4();
-  
-      // Calculate expiration time (24 hours from now)
-      const expiresAt = new Date(Date.now() + 86400 * 1000).toISOString();
-  
-      // Store the key, email, type, and expiration in Supabase
-      const { error: insertError } = await supabase
-        .from("verification_keys")
-        .insert([{ key: verificationKey, email, type, expires_at: expiresAt }]);
-  
-      if (insertError) throw insertError;
-  
-      try {
-        // Generate the verification URL
-        const verificationUrl = `https://ratethiscrow.site/crowmail/verify?key=${verificationKey}`;
-      
-        const resend = new Resend(process.env.RESEND_API_KEY);
+  try {
+    const verificationKey = uuidv4();
+    const expiresAt = new Date(Date.now() + 86400 * 1000).toISOString();
 
-        ( async function () {
-          const { data, error } = await resend.emails.send({
-            from: "CrowMail <crowmail@ratethiscrow.site>",
-            to: email,
-            subject: "Verify Your CrowMail Sign Up",
-            html: `
-        <body style="font-family: monospace; background-color: #f9f8ec; padding: 30px; text-align: center; color: #333;">
-        <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-        <h1 style="color: #2d5d63;">🐦‍⬛ Welcome to CrowMail!</h1>
-        <p style="font-size: 16px;">Hey there,</p>
-        <p style="font-size: 16px;">You’ve just taken the first step toward receiving magnificent crow pictures ${type}.</p>
-        <p style="font-size: 16px;">Please confirm your crowing by clicking below:</p>
-        <a href="${verificationUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #2d5d63; color: white; text-decoration: none; border-radius: 8px; font-size: 16px;">Confirm Crowing</a>
-        <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://ratethiscrow.site" style="color: #777; text-decoration: underline; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
+    const { error: insertError } = await supabase
+      .from("verification_keys")
+      .insert([{ key: verificationKey, email, type, expires_at: expiresAt }]);
+
+    if (insertError) throw insertError;
+
+    try {
+      const verificationUrl = `https://ratethiscrow.site/crowmail/verify?key=${verificationKey}`;
+      const resend = new Resend(process.env.RESEND_API_KEY);
+
+      (async function () {
+        const { data, error } = await resend.emails.send({
+          from: "CrowMail <crowmail@ratethiscrow.site>",
+          to: email,
+          subject: "Verify Your CrowMail Sign Up",
+          html: `
+          <body style="font-family: monospace; background-color: #f9f8ec; padding: 30px; text-align: center; color: #333;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+          <h1 style="color: #2d5d63;">🐦‍⬛ Welcome to CrowMail!</h1>
+          <p style="font-size: 16px;">Hey there,</p>
+          <p style="font-size: 16px;">You've just taken the first step toward receiving magnificent crow pictures ${type}.</p>
+          <p style="font-size: 16px;">Please confirm your crowing by clicking below:</p>
+          <a href="${verificationUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #2d5d63; color: white; text-decoration: none; border-radius: 8px; font-size: 16px;">Confirm Crowing</a>
+          <p style="margin-top: 30px; font-size: 14px; color: #777;">If you didn't sign up for <a href="https://ratethiscrow.site" style="color: #777; text-decoration: underline; font-size: 14px;">CrowMail</a>, you can ignore this message.</p>
           </div>
-        </body>`,
+          </body>`,
         });
 
         if (error) {
           return console.error({ error });
-
         }
 
         console.log("Email sent successfully:", data);
         res.status(200).send("Verification email sent successfully");
+      })();
+    } catch (emailError) {
+      console.error("Error sending verification email:", emailError);
+      res.status(500).send("Error sending verification email");
+    }
+  } catch (error) {
+    console.error("Error generating verification key:", error);
+    res.status(500).send("Error generating verification key");
+  }
+});
 
-        })();
-            } catch (emailError) {
-              console.error("Error sending verification email:", emailError);
-              res.status(500).send("Error sending verification email");
-            }
-          } catch (error) {
-            console.error("Error generating verification key:", error);
-            res.status(500).send("Error generating verification key");
-          }
-        });
-
-  app.post("/crowmail/verify", async (req, res) => {
+app.post("/crowmail/verify", async (req, res) => {
   const { key } = req.query;
 
   if (!key) {
@@ -458,7 +745,6 @@ app.post("/validate-name", (req, res) => {
   }
 
   try {
-    // Retrieve the key from Supabase
     const { data: verificationKey, error: fetchError } = await supabase
       .from("verification_keys")
       .select("*")
@@ -466,7 +752,6 @@ app.post("/validate-name", (req, res) => {
       .single();
 
     if (fetchError && fetchError.code !== "PGRST116") {
-      // If the error is not "No rows found", throw it
       throw fetchError;
     }
 
@@ -476,14 +761,12 @@ app.post("/validate-name", (req, res) => {
 
     const { email, type } = verificationKey;
 
-    // Add the verified email to the database
     const { error: insertError } = await supabase
       .from("crowmail")
       .insert([{ email, type }]);
 
     if (insertError) throw insertError;
 
-    // Delete the key from Supabase
     const { error: deleteError } = await supabase
       .from("verification_keys")
       .delete()
@@ -513,7 +796,6 @@ app.post("/crowmail/unsubscribe", async (req, res) => {
       .single();
 
     if (fetchError && fetchError.code !== "PGRST116") {
-      // If the error is not "No rows found", throw it
       throw fetchError;
     }
 
@@ -521,7 +803,6 @@ app.post("/crowmail/unsubscribe", async (req, res) => {
       return res.status(404).send("User not found in subscription list");
     }
 
-    // Delete the user from the crowmail table
     const { error: deleteError } = await supabase
       .from("crowmail")
       .delete()
