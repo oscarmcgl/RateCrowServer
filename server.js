@@ -95,6 +95,16 @@ app.get("/pair", async (req, res) => {
   }
 
   try {
+    // Ensure session exists in DB to satisfy FK on voting_pairs
+    const { error: sessionUpsertError } = await supabase
+      .from("voting_sessions")
+      .upsert([{ session_id }], { onConflict: "session_id" });
+
+    if (sessionUpsertError) {
+      console.error("Error creating session record:", sessionUpsertError);
+      return res.status(500).json({ error: "Failed to initialize session" });
+    }
+
     // Create or retrieve session
     if (!sessionCache.has(session_id)) {
       sessionCache.set(session_id, {
@@ -169,6 +179,7 @@ app.get("/pair", async (req, res) => {
 
     if (pairError) {
       console.error("Error creating pair record:", pairError);
+      return res.status(500).json({ error: "Failed to create pair" });
     }
 
     // Update session recent crows
@@ -211,6 +222,17 @@ app.post("/vote", async (req, res) => {
   }
 
   try {
+    // Ensure pair exists before inserting vote (FK constraint)
+    const { data: pairRow, error: pairFetchError } = await supabase
+      .from("voting_pairs")
+      .select("pair_id")
+      .eq("pair_id", pair_id)
+      .single();
+
+    if (pairFetchError || !pairRow) {
+      return res.status(400).json({ error: "Invalid or missing pair_id" });
+    }
+
     // Fetch winner and loser
     const { data: winner, error: winnerError } = await supabase
       .from("crows")
