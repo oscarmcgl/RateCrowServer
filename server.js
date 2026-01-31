@@ -395,6 +395,29 @@ app.post("/validate-password", (req, res) => {
   }
 });
 
+// Admin: Disable a crow
+app.post("/admin/disable-crow", async (req, res) => {
+  const { crow_id } = req.body;
+
+  if (!crow_id) {
+    return res.status(400).json({ error: "Missing crow_id" });
+  }
+
+  try {
+    const { error } = await supabase
+      .from("crows")
+      .update({ active: false })
+      .eq("crow_id", crow_id);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: "Crow disabled successfully" });
+  } catch (error) {
+    console.error("Error disabling crow:", error);
+    res.status(500).json({ error: "Failed to disable crow" });
+  }
+});
+
 // Return random active crow
 app.get("/random", async (req, res) => {
   try {
