@@ -25,6 +25,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 session_cache: dict[str, dict] = {}
 
+VALID_CROW_STATUSES = {"active", "inactive", "duplicate", "retired"}
+
 allowed_origins = [
     "https://oscarmcglone.com",
     "https://ratethiscrow.oscarmcglone.com",
@@ -52,6 +54,88 @@ def execute(query, allow_not_found: bool = False):
         raise
 
 
+def is_public_crow(crow: dict) -> bool:
+    """Keep existing live behavior while allowing phased status moderation rollout."""
+    status = crow.get("status")
+    if status:
+        return status == "active"
+    return crow.get("active", True)
+
+
+def status_to_active(status: str) -> bool:
+    return status == "active"
+
+
+def safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_public_crows() -> list[dict]:
+    rows = execute(supabase.table("crows").select("*"))
+    return [crow for crow in (rows or []) if is_public_crow(crow)]
+
+
+def crow_win_rate(crow: dict) -> float:
+    wins = safe_int(crow.get("wins"), 0)
+    losses = safe_int(crow.get("losses"), 0)
+    total = wins + losses
+    if total <= 0:
+        return 0.0
+    return wins / total
+
+
+def crow_match_history(crow_id: str, limit: int = 20) -> list[dict]:
+    winner_rows = execute(
+        supabase.table("votes")
+        .select(
+            "vote_id, pair_id, session_id, winner_crow_id, loser_crow_id, winner_elo_before, loser_elo_before, winner_elo_after, loser_elo_after, created_at"
+        )
+        .eq("winner_crow_id", crow_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    loser_rows = execute(
+        supabase.table("votes")
+        .select(
+            "vote_id, pair_id, session_id, winner_crow_id, loser_crow_id, winner_elo_before, loser_elo_before, winner_elo_after, loser_elo_after, created_at"
+        )
+        .eq("loser_crow_id", crow_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+
+    merged = sorted(
+        (winner_rows or []) + (loser_rows or []),
+        key=lambda row: row.get("created_at") or "",
+        reverse=True,
+    )[:limit]
+
+    history = []
+    for row in merged:
+        is_win = row.get("winner_crow_id") == crow_id
+        opponent_id = row.get("loser_crow_id") if is_win else row.get("winner_crow_id")
+        elo_before = row.get("winner_elo_before") if is_win else row.get("loser_elo_before")
+        elo_after = row.get("winner_elo_after") if is_win else row.get("loser_elo_after")
+
+        history.append(
+            {
+                "vote_id": row.get("vote_id"),
+                "pair_id": row.get("pair_id"),
+                "session_id": row.get("session_id"),
+                "opponent_id": opponent_id,
+                "result": "win" if is_win else "loss",
+                "elo_before": elo_before,
+                "elo_after": elo_after,
+                "created_at": row.get("created_at"),
+            }
+        )
+
+    return history
+
+
 def calculate_elo(winner_elo: int, loser_elo: int, k_factor: int = 32):
     expected_score_winner = 1 / (1 + pow(10, (loser_elo - winner_elo) / 400))
     expected_score_loser = 1 - expected_score_winner
@@ -75,7 +159,8 @@ def calculate_percentile(crow_id: str):
         if not crow:
             return 50
 
-        all_crows = execute(supabase.table("crows").select("elo_rating").eq("active", True))
+        all_crows = execute(supabase.table("crows").select("elo_rating, status, active"))
+        all_crows = [c for c in (all_crows or []) if is_public_crow(c)]
         if not all_crows:
             return 50
 
@@ -103,6 +188,41 @@ def weighted_choice(crows: list[dict]):
             return crow
 
     return crows[-1]
+
+
+def find_similar_elo_candidates(
+    crow_a: dict,
+    active_crows: list[dict],
+    recent_crow_ids: list[str],
+    initial_window: int = 50,
+    max_window: int = 600,
+):
+    """Pick matchup candidates close to crow_a Elo, expanding window when pool is too small."""
+    crow_a_id = crow_a.get("crow_id")
+    crow_a_elo = crow_a.get("elo_rating") or 1500
+
+    window = initial_window
+    while window <= max_window:
+        candidates = [
+            crow
+            for crow in active_crows
+            if crow.get("crow_id") != crow_a_id
+            and crow.get("crow_id") not in recent_crow_ids
+            and abs((crow.get("elo_rating") or 1500) - crow_a_elo) <= window
+        ]
+        if candidates:
+            return candidates
+        window *= 2
+
+    # Last resort: keep matchup possible even if recency filter is too strict.
+    fallback = [crow for crow in active_crows if crow.get("crow_id") != crow_a_id]
+    if not fallback:
+        return []
+
+    closest_gap = min(abs((crow.get("elo_rating") or 1500) - crow_a_elo) for crow in fallback)
+    return [
+        crow for crow in fallback if abs((crow.get("elo_rating") or 1500) - crow_a_elo) == closest_gap
+    ]
 
 
 def crow_response_shape(crow: dict):
@@ -139,12 +259,15 @@ def get_pair():
 
         session = session_cache[session_id]
 
-        active_crows = execute(
+        all_crows = execute(
             supabase.table("crows")
-            .select("crow_id, img_url, elo_rating, is_crow_of_the_day, credit_name, credit_link")
-            .eq("active", True)
+            .select(
+                "crow_id, img_url, elo_rating, is_crow_of_the_day, credit_name, credit_link, status, active"
+            )
             .order("elo_rating", desc=False)
         )
+
+        active_crows = [crow for crow in (all_crows or []) if is_public_crow(crow)]
 
         if not active_crows or len(active_crows) < 2:
             return jsonify({"error": "Not enough active crows"}), 404
@@ -158,31 +281,28 @@ def get_pair():
                 return jsonify({"error": "Featured crow not found"}), 404
 
             crow1 = featured
+            candidates = find_similar_elo_candidates(
+                crow1,
+                active_crows,
+                session["recent_crow_ids"],
+            )
+            crow2 = random.choice(candidates) if candidates else None
+        else:
             available = [
-                c
-                for c in active_crows
-                if c.get("crow_id") != crow1.get("crow_id")
-                and c.get("crow_id") not in session["recent_crow_ids"]
+                crow for crow in active_crows if crow.get("crow_id") not in session["recent_crow_ids"]
             ]
 
             if not available:
                 session["recent_crow_ids"] = []
-                all_others = [c for c in active_crows if c.get("crow_id") != crow1.get("crow_id")]
-                crow2 = random.choice(all_others)
-            else:
-                crow2 = weighted_choice(available)
-        else:
-            available = [
-                c for c in active_crows if c.get("crow_id") not in session["recent_crow_ids"]
-            ]
-
-            if len(available) < 2:
-                session["recent_crow_ids"] = []
                 available = active_crows
 
-            crow1 = weighted_choice(available)
-            remaining = [c for c in available if c.get("crow_id") != crow1.get("crow_id")]
-            crow2 = weighted_choice(remaining)
+            crow1 = random.choice(available)
+            candidates = find_similar_elo_candidates(
+                crow1,
+                active_crows,
+                session["recent_crow_ids"],
+            )
+            crow2 = random.choice(candidates) if candidates else None
 
         if not crow1 or not crow2:
             return jsonify({"error": "Failed to select pair"}), 500
@@ -260,6 +380,7 @@ def post_vote():
                 {
                     "elo_rating": new_winner_elo,
                     "games_played": (winner.get("games_played") or 0) + 1,
+                    "wins": (winner.get("wins") or 0) + 1,
                 }
             )
             .eq("crow_id", winner_id)
@@ -271,6 +392,7 @@ def post_vote():
                 {
                     "elo_rating": new_loser_elo,
                     "games_played": (loser.get("games_played") or 0) + 1,
+                    "losses": (loser.get("losses") or 0) + 1,
                 }
             )
             .eq("crow_id", loser_id)
@@ -313,6 +435,137 @@ def post_vote():
         return jsonify({"error": "Failed to submit vote"}), 500
 
 
+@app.post("/api/v1/vote")
+def post_vote_v1():
+    payload = request.get_json(silent=True) or {}
+    crow_a = payload.get("crow_a")
+    crow_b = payload.get("crow_b")
+    winner_id = payload.get("winner")
+    session_id = payload.get("session_id")
+    pair_id = payload.get("pair_id")
+    user_id = payload.get("user_id")
+
+    if not crow_a or not crow_b or not winner_id:
+        return jsonify({"error": "Missing crow_a, crow_b, or winner"}), 400
+
+    if crow_a == crow_b:
+        return jsonify({"error": "crow_a and crow_b must be different"}), 400
+
+    if winner_id not in {crow_a, crow_b}:
+        return jsonify({"error": "winner must match crow_a or crow_b"}), 400
+
+    if user_id is not None:
+        try:
+            uuid.UUID(str(user_id))
+        except ValueError:
+            return jsonify({"error": "user_id must be a valid UUID or null"}), 400
+
+    if session_id is not None:
+        try:
+            uuid.UUID(str(session_id))
+        except ValueError:
+            return jsonify({"error": "session_id must be a valid UUID or null"}), 400
+
+    if pair_id is not None:
+        try:
+            uuid.UUID(str(pair_id))
+        except ValueError:
+            return jsonify({"error": "pair_id must be a valid UUID or null"}), 400
+
+    try:
+        crow_a_row = execute(
+            supabase.table("crows").select("*").eq("crow_id", crow_a).single(),
+            allow_not_found=True,
+        )
+        crow_b_row = execute(
+            supabase.table("crows").select("*").eq("crow_id", crow_b).single(),
+            allow_not_found=True,
+        )
+
+        if not crow_a_row or not crow_b_row:
+            return jsonify({"error": "One or more crows not found"}), 404
+
+        if not is_public_crow(crow_a_row) or not is_public_crow(crow_b_row):
+            return jsonify({"error": "Only active crows can be voted on"}), 400
+
+        winner_row = crow_a_row if winner_id == crow_a else crow_b_row
+        loser_row = crow_b_row if winner_id == crow_a else crow_a_row
+        loser_id = loser_row.get("crow_id")
+
+        k = 32
+        elo = calculate_elo(winner_row.get("elo_rating", 1500), loser_row.get("elo_rating", 1500), k)
+        new_winner_elo = elo["new_winner_elo"]
+        new_loser_elo = elo["new_loser_elo"]
+
+        execute(
+            supabase.table("crows")
+            .update(
+                {
+                    "elo_rating": new_winner_elo,
+                    "games_played": (winner_row.get("games_played") or 0) + 1,
+                    "wins": (winner_row.get("wins") or 0) + 1,
+                }
+            )
+            .eq("crow_id", winner_id)
+        )
+
+        execute(
+            supabase.table("crows")
+            .update(
+                {
+                    "elo_rating": new_loser_elo,
+                    "games_played": (loser_row.get("games_played") or 0) + 1,
+                    "losses": (loser_row.get("losses") or 0) + 1,
+                }
+            )
+            .eq("crow_id", loser_id)
+        )
+
+        vote_id = str(uuid.uuid4())
+        resolved_session_id = str(session_id) if session_id is not None else str(uuid.uuid4())
+        resolved_pair_id = str(pair_id) if pair_id is not None else str(uuid.uuid4())
+
+        execute(
+            supabase.table("votes").insert(
+                [
+                    {
+                        "vote_id": vote_id,
+                        "pair_id": resolved_pair_id,
+                        "session_id": resolved_session_id,
+                        "winner_crow_id": winner_id,
+                        "loser_crow_id": loser_id,
+                        "winner_elo_before": winner_row.get("elo_rating", 1500),
+                        "loser_elo_before": loser_row.get("elo_rating", 1500),
+                        "winner_elo_after": new_winner_elo,
+                        "loser_elo_after": new_loser_elo,
+                        "k_factor": k,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "user_id": str(user_id) if user_id is not None else None,
+                    }
+                ]
+            )
+        )
+
+        return jsonify(
+            {
+                "vote_id": vote_id,
+                "crow_a": crow_a,
+                "crow_b": crow_b,
+                "winner": winner_id,
+                "session_id": resolved_session_id,
+                "pair_id": resolved_pair_id,
+                "user_id": user_id,
+                "winner_elo_before": winner_row.get("elo_rating", 1500),
+                "winner_elo_after": new_winner_elo,
+                "loser_elo_before": loser_row.get("elo_rating", 1500),
+                "loser_elo_after": new_loser_elo,
+            }
+        )
+    except Exception as exc:
+        print("Error submitting /api/v1/vote:", exc)
+        return jsonify({"error": "Failed to submit vote"}), 500
+
+
 @app.get("/crow-of-the-day")
 def get_crow_of_the_day():
     try:
@@ -338,13 +591,14 @@ def get_crow_of_the_day():
                 return jsonify({"error": "Failed to fetch COTD"}), 500
             return jsonify(crow)
 
-        active_crows = execute(
+        all_crows = execute(
             supabase.table("crows")
             .select("*")
-            .eq("active", True)
             .order("games_played", desc=False)
             .limit(10)
         )
+
+        active_crows = [crow for crow in (all_crows or []) if is_public_crow(crow)]
 
         if not active_crows:
             return jsonify({"error": "No active crows found"}), 404
@@ -400,17 +654,54 @@ def disable_crow():
         return jsonify({"error": "Missing crow_id"}), 400
 
     try:
-        execute(supabase.table("crows").update({"active": False}).eq("crow_id", crow_id))
+        execute(
+            supabase.table("crows")
+            .update({"active": False, "status": "inactive"})
+            .eq("crow_id", crow_id)
+        )
         return jsonify({"success": True, "message": "Crow disabled successfully"})
     except Exception as exc:
         print("Error disabling crow:", exc)
         return jsonify({"error": "Failed to disable crow"}), 500
 
 
+@app.post("/admin/set-crow-status")
+def set_crow_status():
+    payload = request.get_json(silent=True) or {}
+    crow_id = payload.get("crow_id")
+    status = payload.get("status")
+
+    if not crow_id or not status:
+        return jsonify({"error": "Missing crow_id or status"}), 400
+
+    if status not in VALID_CROW_STATUSES:
+        return (
+            jsonify(
+                {
+                    "error": "Invalid status",
+                    "allowed": sorted(VALID_CROW_STATUSES),
+                }
+            ),
+            400,
+        )
+
+    try:
+        execute(
+            supabase.table("crows")
+            .update({"status": status, "active": status_to_active(status)})
+            .eq("crow_id", crow_id)
+        )
+        return jsonify({"success": True, "crow_id": crow_id, "status": status})
+    except Exception as exc:
+        print("Error updating crow status:", exc)
+        return jsonify({"error": "Failed to update crow status"}), 500
+
+
 @app.get("/random")
 def random_crow():
     try:
-        crows = execute(supabase.table("crows").select("*").eq("active", True))
+        crows = execute(supabase.table("crows").select("*"))
+        crows = [crow for crow in (crows or []) if is_public_crow(crow)]
         if not crows:
             return "No data found", 404
         return jsonify(random.choice(crows))
@@ -479,6 +770,9 @@ def upload_crow():
                         "active": True,
                         "elo_rating": 1500,
                         "games_played": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "status": "active",
                     }
                 ]
             )
@@ -503,9 +797,8 @@ def upload_crow():
 @app.get("/leaderboard")
 def leaderboard():
     try:
-        crows = execute(
-            supabase.table("crows").select("*").eq("active", True).order("elo_rating", desc=True)
-        )
+        crows = execute(supabase.table("crows").select("*").order("elo_rating", desc=True))
+        crows = [crow for crow in (crows or []) if is_public_crow(crow)]
         top_25_percent = int((len(crows) * 0.25) + 0.999999)
         return jsonify(crows[:top_25_percent])
     except Exception as exc:
@@ -513,12 +806,68 @@ def leaderboard():
         return "Error fetching leaderboard", 500
 
 
+@app.get("/top-crows")
+def top_crows():
+    try:
+        limit = max(1, min(200, safe_int(request.args.get("limit"), 50)))
+        min_games = max(0, safe_int(request.args.get("min_games"), 10))
+
+        crows = get_public_crows()
+        crows = [crow for crow in crows if safe_int(crow.get("games_played"), 0) >= min_games]
+        crows.sort(
+            key=lambda crow: (
+                safe_int(crow.get("elo_rating"), 1500),
+                safe_int(crow.get("games_played"), 0),
+            ),
+            reverse=True,
+        )
+        return jsonify(crows[:limit])
+    except Exception as exc:
+        print("Error fetching top crows:", exc)
+        return "Error fetching top crows", 500
+
+
+@app.get("/controversial-crows")
+def controversial_crows():
+    try:
+        limit = max(1, min(200, safe_int(request.args.get("limit"), 50)))
+        min_games = max(1, safe_int(request.args.get("min_games"), 10))
+
+        crows = get_public_crows()
+        crows = [crow for crow in crows if safe_int(crow.get("games_played"), 0) >= min_games]
+
+        def controversy_key(crow: dict):
+            win_rate = crow_win_rate(crow)
+            return (
+                abs(win_rate - 0.5),
+                -safe_int(crow.get("games_played"), 0),
+            )
+
+        crows.sort(key=controversy_key)
+        return jsonify(crows[:limit])
+    except Exception as exc:
+        print("Error fetching controversial crows:", exc)
+        return "Error fetching controversial crows", 500
+
+
+@app.get("/new-crows")
+def new_crows():
+    try:
+        limit = max(1, min(200, safe_int(request.args.get("limit"), 50)))
+
+        crows = get_public_crows()
+        crows.sort(key=lambda crow: crow.get("created_at") or "", reverse=True)
+        return jsonify(crows[:limit])
+    except Exception as exc:
+        print("Error fetching new crows:", exc)
+        return "Error fetching new crows", 500
+
+
 @app.get("/all-crows")
 def all_crows():
     try:
-        crows = execute(
-            supabase.table("crows").select("*").eq("active", True).order("elo_rating", desc=True)
-        )
+        crows = execute(supabase.table("crows").select("*").order("elo_rating", desc=True))
+        crows = [crow for crow in (crows or []) if is_public_crow(crow)]
         if not crows:
             return "No data found", 404
         return jsonify(crows)
@@ -530,6 +879,10 @@ def all_crows():
 @app.get("/crow/<crow_id>")
 def get_crow(crow_id: str):
     try:
+        include_history_raw = (request.args.get("include_history") or "1").strip().lower()
+        include_history = include_history_raw not in {"0", "false", "no"}
+        history_limit = max(1, min(100, safe_int(request.args.get("history_limit"), 20)))
+
         crow = execute(
             supabase.table("crows").select("*").eq("crow_id", crow_id).single(),
             allow_not_found=True,
@@ -537,17 +890,32 @@ def get_crow(crow_id: str):
         if not crow:
             return "Crow not found", 404
 
-        return jsonify(
-            {
-                "crow_id": crow.get("crow_id"),
-                "img_url": crow.get("img_url"),
-                "avg_rating": crow.get("avg_rating"),
-                "rating_count": crow.get("rating_count"),
-                "credit_name": crow.get("credit_name") or "Unknown",
-                "credit_link": crow.get("credit_link") or "#",
-                "name": crow.get("name") or "Unnamed Crow",
-            }
-        )
+        wins = safe_int(crow.get("wins"), 0)
+        losses = safe_int(crow.get("losses"), 0)
+        games_played = safe_int(crow.get("games_played"), wins + losses)
+        win_rate = crow_win_rate(crow)
+
+        response = {
+            "crow_id": crow.get("crow_id"),
+            "img_url": crow.get("img_url"),
+            "elo_rating": safe_int(crow.get("elo_rating"), 1500),
+            "games_played": games_played,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+            "credit_name": crow.get("credit_name") or "Unknown",
+            "credit_link": crow.get("credit_link") or "#",
+            "created_at": crow.get("created_at"),
+            "status": crow.get("status") or "active",
+            "avg_rating": crow.get("avg_rating"),
+            "rating_count": crow.get("rating_count"),
+            "name": crow.get("name") or "Unnamed Crow",
+        }
+
+        if include_history:
+            response["match_history"] = crow_match_history(crow_id, history_limit)
+
+        return jsonify(response)
     except Exception as exc:
         print("Error fetching crow by ID:", exc)
         return "Error fetching crow", 500
